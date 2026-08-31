@@ -47,7 +47,7 @@ The backend server connects to PostgreSQL and provides the API for the simulator
 3. *(Optional)* Ensure your PostgreSQL credentials match the `.env` file located in the `server` directory:
    ```env
    DB_USER=postgres
-   DB_PASSWORD=123456789@Ks
+   DB_PASSWORD=password
    DB_HOST=localhost
    DB_PORT=5432
    DB_NAME=hrms_db
@@ -93,3 +93,51 @@ The frontend is a Vite + React application.
 * **Collapsible Database Panel**: View your database schema gracefully with interactive collapsible accordion tables so the screen stays uncluttered.
 * **Dynamic JSONB Schema**: Register new custom HR modules on the fly, with their data seamlessly injected into the flexible `hrms_records` PostgreSQL structure.
 * **Visual Graph**: See how different HR modules (like Payroll and Attendance) depend on each other visually.
+
+# protocols used
+
+🔌 Protocols Used
+1. HTTP/REST — Frontend ↔ Backend
+The React frontend communicates with the Express server via HTTP requests:
+
+Browser (React)  →  HTTP  →  Express.js (localhost:3000)
+GET /api/modules — fetch all modules
+POST /api/modules — create a module
+PATCH /api/modules/:id — update module status
+GET /api/records — fetch all records
+POST /api/records — insert a record
+DELETE /api/reset — reset simulation
+
+
+2. PostgreSQL Wire Protocol — Backend ↔ Database
+The Express server connects to PostgreSQL using the pg (node-postgres) library, which uses PostgreSQL's native TCP binary wire protocol:
+
+Express.js  →  TCP/PostgreSQL Wire Protocol  →  PostgreSQL (localhost:5432)
+
+3. WebSocket / HMR (dev only) — Vite Hot Reload
+Vite uses WebSocket in development to push hot module replacement (HMR) updates instantly to the browser without a full refresh:
+
+Vite Dev Server  →  WebSocket  →  Browser
+
+
+# how the simulation and its animations work under the hood in this project:
+Here is exactly how the simulation and its animations work under the hood in this project:
+
+1. JavaScript Promises (setTimeout)
+Instead of a complex simulation engine like SimPy, the "simulation" steps are controlled using native JavaScript timeouts wrapped in Promises. In the code, you'll see a small utility function:
+
+javascript
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+When you trigger an action (like running Payroll), the code uses await sleep(500) between steps to create deliberate delays. This creates the visual effect of a process taking time and stepping through the workflow.
+
+2. React State Updates
+As the JavaScript steps through the workflow, it constantly updates React state variables:
+
+hlNodes (Highlighted Nodes): Tracks which HR module is currently active.
+hlEdges (Highlighted Edges): Tracks which dependency line in the graph is active.
+flash: Temporarily flags a module to "glow" when data is inserted.
+3. CSS Transitions
+The actual visual "animation" (the glowing, color changes, and fading lines) is purely CSS. When the React state updates (e.g., adding "Attendance" to hlNodes), React re-renders that specific SVG circle or box with an active CSS class (like .active-node). That CSS class has a transition property (e.g., transition: all 0.3s ease), which tells the browser to smoothly animate the color and glow effect.
+
+Summary
+It’s a state-driven React UI. The JavaScript logic dictates when a step happens, React updates the UI state, and standard CSS handles the smooth visual animations!
