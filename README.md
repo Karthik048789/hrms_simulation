@@ -20,15 +20,17 @@ CREATE TABLE hrms_modules (
   layer INTEGER NOT NULL,
   table_name TEXT NOT NULL,
   active BOOLEAN DEFAULT TRUE,
-  is_custom BOOLEAN DEFAULT TRUE
+  is_custom BOOLEAN DEFAULT TRUE,
+  schema JSONB
 );
 
 -- Store the actual data rows flexibly
 CREATE TABLE hrms_records (
-  id TEXT PRIMARY KEY,
+  id TEXT NOT NULL,
   module_id TEXT NOT NULL, 
   data JSONB NOT NULL,     
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+  PRIMARY KEY (id, module_id)
 );
 ```
 
@@ -93,6 +95,12 @@ The frontend is a Vite + React application.
 * **Collapsible Database Panel**: View your database schema gracefully with interactive collapsible accordion tables so the screen stays uncluttered.
 * **Dynamic JSONB Schema**: Register new custom HR modules on the fly, with their data seamlessly injected into the flexible `hrms_records` PostgreSQL structure.
 * **Visual Graph**: See how different HR modules (like Payroll and Attendance) depend on each other visually.
+* **Industrial Payroll Simulation**: Automatically calculates net pay based on physical logged attendance ("Present" or "Paid Leave") multiplied by a configurable Daily Wage Rate, rather than a fixed monthly amount.
+* **Biometric Sensor Toggle**: Includes an interactive IoT hardware toggle. When switched offline, the system strictly blocks and logs errors for any incoming attendance punches.
+* **Performance-Based Automated Bonuses**: Dynamically links the Performance module with Payroll, seamlessly parsing past appraisal ratings to inject automated bonuses into an employee's gross salary at processing time.
+* **Reverse-Flow Offboarding Simulation**: An animated dependency sequence that traces backwards to visually revoke biometric access, recover assets, clear loans, and run final payroll settlement during termination.
+* **Role-Based Access Control (RBAC) Simulator**: Toggles between 'HR ADMIN' and 'EMPLOYEE' views, instantly updating the UI and strictly blocking unauthorized HR actions from being executed or saved to the database.
+* **Financial Disbursement Enforcement**: Simulates strict financial workflows where special allowances and performance bonuses are processed once per payroll cycle and marked as "Disbursed" to prevent double-payments.
 
 # protocols used
 
@@ -141,3 +149,26 @@ The actual visual "animation" (the glowing, color changes, and fading lines) is 
 
 Summary
 It’s a state-driven React UI. The JavaScript logic dictates when a step happens, React updates the UI state, and standard CSS handles the smooth visual animations!
+
+# Salary Band Dictionary based on the Designation.
+
+For example, we could map it like this:
+
+Associate: Rs. 1,000 / day
+Specialist: Rs. 1,500 / day
+Senior Specialist: Rs. 2,000 / day
+Lead: Rs. 2,500 / day
+Manager: Rs. 3,500 / day
+Senior Manager: Rs. 5,000 / day
+Director: Rs. 8,000 / day
+
+
+# Dependency Layers for the HR Modules
+
+Layer 0 — emp_docs (Employee & Docs). It has no dependencies; every other module ultimately depends on it, directly or indirectly.
+
+Layer 1 — attendance_leave, performance, assets, loans, awards. Each of these depends only on emp_docs (layer 0), so its layer = 0 + 1 = 1.
+
+Layer 2 — payroll and special_allowances. payroll depends on both emp_docs (layer 0) and attendance_leave (layer 1) — its layer is the highest dependency's layer + 1, so 1 + 1 = 2. Same logic gives special_allowances layer 2 (it depends on payroll).
+
+Layer 3 — ess (Self-Service). It depends on emp_docs, attendance_leave, payroll, and performance — the highest of those is payroll at layer 2, so ess = 2 + 1 = 3.

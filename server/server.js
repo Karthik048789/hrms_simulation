@@ -37,11 +37,11 @@ app.get('/api/modules', async (req, res) => {
 
 // Create a new module
 app.post('/api/modules', async (req, res) => {
-  const { id, name, layer, table_name, active, is_custom } = req.body;
+  const { id, name, layer, table_name, active, is_custom, schema } = req.body;
   try {
     const result = await pool.query(
-      'INSERT INTO hrms_modules (id, name, layer, table_name, active, is_custom) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [id, name, layer, table_name, active, is_custom]
+      'INSERT INTO hrms_modules (id, name, layer, table_name, active, is_custom, schema) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [id, name, layer, table_name, active, is_custom, schema]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -88,7 +88,7 @@ app.post('/api/records', async (req, res) => {
   const { id, module_id, data } = req.body;
   try {
     const result = await pool.query(
-      'INSERT INTO hrms_records (id, module_id, data) VALUES ($1, $2, $3) RETURNING *',
+      'INSERT INTO hrms_records (id, module_id, data) VALUES ($1, $2, $3) ON CONFLICT (id, module_id) DO UPDATE SET data = hrms_records.data || EXCLUDED.data RETURNING *',
       [id, module_id, data]
     );
     res.status(201).json(result.rows[0]);
@@ -111,6 +111,16 @@ app.delete('/api/reset', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
+});
+
+process.on('SIGINT', () => {
+  console.log('\nGracefully shutting down...');
+  server.close(() => {
+    pool.end(() => {
+      console.log('PostgreSQL pool drained');
+      process.exit(0);
+    });
+  });
 });
