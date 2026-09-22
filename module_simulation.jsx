@@ -2,8 +2,12 @@ import React, { useState, useRef, useEffect, useMemo } from "react";
 import {
   Users, CalendarCheck, Wallet, TrendingUp, Monitor,
   Shield, CreditCard, Award, Gift,
-  Plus, X, Check, RotateCcw, Power, ChevronDown, ChevronRight, Fingerprint
+  Plus, X, Check, RotateCcw, Power, ChevronDown, ChevronUp, ChevronRight, Fingerprint, Bell,
+  FileText, Calendar, Clock, Receipt, UserCheck, FolderPlus, Download, FileSpreadsheet, LifeBuoy,
+  Database, Search, Filter, Eye, ArrowRight, CheckCircle2, AlertTriangle, AlertCircle, XCircle, ExternalLink, RefreshCw
 } from "lucide-react";
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 const COLORS = {
   emp_docs: "#4FD1C5", attendance_leave: "#7DD3FC", payroll: "#8CE99A",
@@ -51,6 +55,8 @@ const INITIAL_EDGES = [
   { dependent: "awards", dependency: "emp_docs" },
   { dependent: "payroll", dependency: "emp_docs" },
   { dependent: "payroll", dependency: "attendance_leave" },
+  { dependent: "payroll", dependency: "loans" },
+  { dependent: "payroll", dependency: "awards" },
   { dependent: "special_allowances", dependency: "emp_docs" },
   { dependent: "special_allowances", dependency: "payroll" },
   { dependent: "ess", dependency: "emp_docs" },
@@ -90,6 +96,135 @@ function suggestDeps(name, moduleIds) {
 let idSeed = 100;
 const nextId = (prefix) => `${prefix}-${idSeed++}`;
 
+function getLocalDateStr(d = new Date()) {
+  if (typeof d === "string") {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d.trim())) return d.trim();
+    d = new Date(d.includes("T") ? d : d + "T00:00:00");
+  }
+  const dt = (d instanceof Date && !isNaN(d.getTime())) ? d : new Date();
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, "0");
+  const day = String(dt.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getEssUsageDetails(r) {
+  if (!r) return { usage: "Unknown", issueOrUpdate: "—", impact: "—", category: "General" };
+  const req = r.request || "ESS Request";
+  let usage = req;
+  let issueOrUpdate = "";
+  let impact = "";
+  let category = req;
+
+  if (req === "Reimbursement Claim") {
+    usage = "Expense Reimbursement Claim";
+    category = r.claimCategory || (r.details?.split("—")?.[0]?.trim()) || "Travel / Business Expense";
+    const amt = r.claimAmount != null
+      ? `₹${Number(r.claimAmount).toLocaleString("en-IN")}`
+      : (r.details?.match(/Rs\.[\d,]+/)?.[0]?.replace("Rs.", "₹") || "₹1,200");
+    issueOrUpdate = `Claimed ${amt} for ${category}`;
+    if (r.details && !r.details.includes(amt) && !r.details.includes(category)) {
+      issueOrUpdate += ` • ${r.details}`;
+    }
+    if (r.status?.includes("Approved")) {
+      impact = `Approved by HR: ${amt} credited to Special Allowances (Disbursed in Payroll)`;
+    } else if (r.status?.includes("Rejected")) {
+      impact = "Rejected by HR: Expense claim denied; employee notified";
+    } else {
+      impact = "Submitted by Employee: Pending HR receipt verification & payroll allowance credit";
+    }
+  } else if (req === "HR & IT Helpdesk" || req === "IT Declaration Submission") {
+    usage = "HR & IT Helpdesk Ticket";
+    const prio = r.ticketPriority || "High";
+    const sub = r.ticketSubject || (r.details?.split(":")?.[1]?.trim()) || "IT Support Request";
+    category = r.ticketCategory || (r.details?.match(/\[.*?\]\s*([^:]+)/)?.[1]?.trim()) || "IT Hardware & Equipment";
+    const desc = r.ticketDescription ? ` — "${r.ticketDescription}"` : "";
+    issueOrUpdate = `[${prio} Priority] ${category}: ${sub}${desc}`;
+    if (r.status?.includes("Resolved")) {
+      impact = "Resolved & Closed: Service diagnostics executed & ticket marked closed";
+    } else if (r.status?.includes("Escalated")) {
+      impact = "Escalated: Priority raised to Critical Tier-2 Engineering / Facilities Lead";
+    } else {
+      impact = "Submitted by Employee: Open ticket awaiting technician diagnostic or HR resolution";
+    }
+  } else if (req === "Profile Update") {
+    usage = "Master Profile Modification";
+    const field = r.profileField || (r.details?.split(":")?.[0]?.trim()) || "Residential Address";
+    category = field;
+    const val = r.profileValue || (r.details?.includes(":") ? r.details.split(":").slice(1).join(":").trim() : r.details) || "Updated";
+    issueOrUpdate = `${field} ➔ "${val}"`;
+    if (r.status?.includes("Approved")) {
+      impact = `Approved by HR: Master Employee Directory & KYC permanently updated with new ${field}`;
+    } else if (r.status?.includes("Rejected")) {
+      impact = `Rejected by HR: Profile modification declined by HR; employee notified`;
+    } else {
+      impact = `Submitted by Employee: Pending HR KYC & address verification in Approvals Drawer`;
+    }
+  } else if (req === "Attendance Correction") {
+    usage = "Attendance Regularization";
+    const dt = r.corrDate || (r.details?.match(/\d{4}-\d{2}-\d{2}/)?.[0]) || "Logged Date";
+    const sess = r.corrSession || (r.details?.match(/\((.*?)\)/)?.[1]) || "Morning Punch IN";
+    const rsn = r.corrReason || (r.details?.includes("—") ? r.details.split("—")[1]?.trim() : "Biometric Hardware Error");
+    category = sess;
+    issueOrUpdate = `${dt} (${sess}) • Reason: ${rsn}`;
+    if (r.status?.includes("Approved")) {
+      impact = `Approved by HR: Attendance punch registered on ${dt} (${sess}) in Attendance Sheet`;
+    } else if (r.status?.includes("Rejected")) {
+      impact = `Rejected by HR: Attendance regularization for ${dt} declined; employee notified`;
+    } else {
+      impact = `Submitted by Employee: Awaiting supervisor approval in Approvals Drawer`;
+    }
+  } else if (req === "Document Request") {
+    usage = "Official HR Document Request";
+    const doc = r.docType || (r.details?.split("[")?.[0]?.trim()) || "Bonafide Certificate";
+    const purp = r.docPurpose || (r.details?.match(/\[Purpose:\s*(.*?)\]/)?.[1]) || "";
+    category = doc;
+    issueOrUpdate = `Request "${doc}"${purp ? ` [Purpose: ${purp}]` : ""}`;
+    if (r.status?.includes("Approved")) {
+      impact = `Approved by HR: "${doc}" authorized with digital company seal & issued`;
+    } else if (r.status?.includes("Rejected")) {
+      impact = `Rejected by HR: Document issuance declined; employee notified`;
+    } else {
+      impact = `Submitted by Employee: Pending HR verification & digital seal authorization`;
+    }
+  } else if (req === "Payslip Download") {
+    usage = "Encrypted Salary Statement";
+    category = "Payroll Statement";
+    issueOrUpdate = r.details || "Monthly Encrypted Salary Payslip generated";
+    impact = "Instant Self-Service: Encrypted monthly payslip statement delivered";
+  } else if (req === "Leave Balance Check") {
+    usage = "Leave Balance Inquiry";
+    category = "Leave Quota";
+    issueOrUpdate = r.details || "Annual / Casual / Sick leave quota ledger queried";
+    impact = "Instant Self-Service: Live 3-tier leave balance fetched";
+  } else {
+    issueOrUpdate = r.details || `${req} executed via ESS Portal`;
+    impact = "Executed via ESS Portal";
+  }
+
+  return { usage, issueOrUpdate, impact, category };
+}
+
+function getStatusBadge(status) {
+  const s = String(status || "Completed").trim();
+  if (s.includes("Approved")) {
+    return { label: s === "Approved" ? "Approved by HR" : s, color: "#8CE99A", bg: "rgba(140,233,154,0.14)", border: "rgba(140,233,154,0.35)", icon: "✓" };
+  }
+  if (s.includes("Resolved")) {
+    return { label: "Resolved & Closed", color: "#6BF2C2", bg: "rgba(107,242,194,0.14)", border: "rgba(107,242,194,0.35)", icon: "✓" };
+  }
+  if (s.includes("Pending") || s.includes("Open")) {
+    return { label: s.includes("HR") ? "Submitted (Pending HR)" : s, color: "#F2B84B", bg: "rgba(242,184,75,0.15)", border: "rgba(242,184,75,0.45)", icon: "⏳" };
+  }
+  if (s.includes("Escalated")) {
+    return { label: "Escalated to Tier-2", color: "#F2946B", bg: "rgba(242,148,107,0.16)", border: "rgba(242,148,107,0.45)", icon: "⚠️" };
+  }
+  if (s.includes("Rejected")) {
+    return { label: "Rejected by HR", color: "#F26B6B", bg: "rgba(242,107,107,0.15)", border: "rgba(242,107,107,0.45)", icon: "✕" };
+  }
+  return { label: s, color: "#7DD3FC", bg: "rgba(125,211,252,0.12)", border: "rgba(125,211,252,0.3)", icon: "●" };
+}
+
 export default function ModuleSimulation() {
   const [modules, setModules] = useState(INITIAL_MODULES);
   const [edges, setEdges] = useState(INITIAL_EDGES);
@@ -121,14 +256,80 @@ export default function ModuleSimulation() {
   const [leaveEmpId, setLeaveEmpId] = useState("");
   const [leaveType, setLeaveType] = useState("Annual Leave");
   const [leaveDays, setLeaveDays] = useState(1);
-  const [leaveStartDate, setLeaveStartDate] = useState(new Date().toISOString().slice(0, 10));
+  const [leaveStartDate, setLeaveStartDate] = useState(getLocalDateStr());
+  const [isHalfDay, setIsHalfDay] = useState(false);
+  const [halfDaySession, setHalfDaySession] = useState("First Half (Morning)");
+  const [odPurpose, setOdPurpose] = useState("Client Site Visit");
+  const [compOffWorkedDate, setCompOffWorkedDate] = useState("2026-09-13 (Sunday Deployment)");
+  const [medicalCertDate, setMedicalCertDate] = useState("EDD: Oct 2026 / Medical Cert #MC-9021");
   // ── Unified action modal ───────────────────────────────────────────────────
   const [modal, setModal] = useState(null);
   const [customData, setCustomData] = useState({});
   const [loading, setLoading] = useState(true);
   const [dbStatus, setDbStatus] = useState("idle"); // idle, syncing, synced, error
   const [expandedDb, setExpandedDb] = useState(new Set(["emp_docs"]));
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [dbTab, setDbTab] = useState("ess");
+  const [dbSearch, setDbSearch] = useState("");
+  const [dbStatusFilter, setDbStatusFilter] = useState("ALL");
+  const [inspectRecord, setInspectRecord] = useState(null);
+  const [isDbExplorerExpanded, setIsDbExplorerExpanded] = useState(true);
+  const [ffStatement, setFfStatement] = useState(null);
   const syncTimerRef = useRef(null);
+
+  const pendingLeaves = useMemo(() => {
+    return (db.attendance_leave || []).filter(r => r.type !== "Attendance" && r.dates !== "Balance" && r.status === "Pending Approval");
+  }, [db.attendance_leave]);
+
+  const pendingLoans = useMemo(() => {
+    return (db.loans || []).filter(r => r.status === "Under Review");
+  }, [db.loans]);
+
+  const pendingClaims = useMemo(() => {
+    return (db.ess || []).filter(r => r.request === "Reimbursement Claim" && (r.status === "Pending HR Approval" || r.status === "Pending Approval"));
+  }, [db.ess]);
+
+  const pendingAttendanceCorrections = useMemo(() => {
+    return (db.ess || []).filter(r => r.request === "Attendance Correction" && (r.status === "Pending HR Approval" || r.status === "Pending Approval"));
+  }, [db.ess]);
+
+  const pendingDocRequests = useMemo(() => {
+    return (db.ess || []).filter(r => r.request === "Document Request" && (r.status === "Pending HR Approval" || r.status === "Pending Approval"));
+  }, [db.ess]);
+
+  const pendingProfileUpdates = useMemo(() => {
+    return (db.ess || []).filter(r => r.request === "Profile Update" && (r.status === "Pending HR Approval" || r.status === "Pending Approval"));
+  }, [db.ess]);
+
+  const pendingTickets = useMemo(() => {
+    return (db.ess || []).filter(r => (r.request === "HR & IT Helpdesk" || r.request === "IT Declaration Submission") && (r.status?.includes("Pending") || r.status?.includes("Open") || r.status?.includes("Escalated")));
+  }, [db.ess]);
+
+  const pendingCount = pendingLeaves.length + pendingLoans.length + pendingClaims.length + pendingAttendanceCorrections.length + pendingDocRequests.length + pendingProfileUpdates.length + pendingTickets.length;
+
+  function getLeaveBalance(empName, type) {
+    let quotaType = "Annual Leave Balance";
+    if (type && type.includes("Casual")) quotaType = "Casual Leave Balance";
+    else if (type && type.includes("Sick")) quotaType = "Sick Leave Balance";
+
+    const balRow = (db.attendance_leave || []).find(r => {
+      if (r.emp !== empName) return false;
+      if (r.type === quotaType) return true;
+      if (r.dates === "Balance" && r.type && r.type.includes(quotaType.split(" ")[0])) return true;
+      return false;
+    });
+
+    if (balRow && balRow.balance !== undefined) {
+      return Number(balRow.balance);
+    }
+    if (balRow && balRow.status) {
+      const m = String(balRow.status).match(/[\d.]+/);
+      if (m) return parseFloat(m[0]);
+    }
+    if (quotaType === "Casual Leave Balance") return 6.0;
+    if (quotaType === "Sick Leave Balance") return 6.0;
+    return 12.0;
+  }
 
   function toggleDbExpanded(id) {
     setExpandedDb((prev) => {
@@ -144,8 +345,8 @@ export default function ModuleSimulation() {
     async function fetchInitialData() {
       try {
         const [modRes, recRes] = await Promise.all([
-          fetch('http://localhost:3000/api/modules'),
-          fetch('http://localhost:3000/api/records')
+          fetch(`${API_BASE}/api/modules`),
+          fetch(`${API_BASE}/api/records`)
         ]);
 
         if (modRes.ok && recRes.ok) {
@@ -180,6 +381,52 @@ export default function ModuleSimulation() {
             if (!newDb[rec.module_id]) newDb[rec.module_id] = [];
             newDb[rec.module_id].push(rec.data);
           });
+
+          // Self-healing asset auto-reconciliation:
+          // If any employee is Inactive, ensure their assets are marked "Returned (Offboarded)"
+          const inactiveEmpNames = new Set(
+            (newDb.emp_docs || [])
+              .filter(e => e.status && e.status.includes("Inactive"))
+              .map(e => e.name?.trim().toLowerCase())
+          );
+          if (newDb.assets) {
+            newDb.assets = newDb.assets.map(a => {
+              const custodian = a.emp?.trim().toLowerCase();
+              if (custodian && inactiveEmpNames.has(custodian) && (a.status === "Allocated" || (!a.status?.includes("Returned") && !a.status?.includes("Recovered")))) {
+                const autoReturned = {
+                  ...a,
+                  status: "Returned (Offboarded)",
+                  returnReason: "Employee Offboarding",
+                  returnedDate: a.returnedDate || getLocalDateStr()
+                };
+                fetch(`${API_BASE}/api/records`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ id: a.id, module_id: "assets", data: autoReturned })
+                }).catch(() => { });
+                return autoReturned;
+              }
+              return a;
+            });
+          }
+
+          // Auto-reconcile and populate dailyRate for all employees based on DESIGNATION_RATES
+          if (newDb.emp_docs) {
+            newDb.emp_docs = newDb.emp_docs.map(e => {
+              const expectedRate = DESIGNATION_RATES[e.designation] || 1000;
+              if (e.dailyRate === undefined || e.dailyRate === null || e.dailyRate === "") {
+                const updatedEmp = { ...e, dailyRate: expectedRate };
+                fetch(`${API_BASE}/api/records`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ id: e.id, module_id: "emp_docs", data: updatedEmp })
+                }).catch(() => { });
+                return updatedEmp;
+              }
+              return e;
+            });
+          }
+
           setDb(newDb);
 
           // Re-build edges for custom modules
@@ -231,6 +478,16 @@ export default function ModuleSimulation() {
     setLog((prev) => [...prev, { id: prev.length, time, op, table, text }]);
   }
 
+  function checkNetworkOrWarn() {
+    if (!networkOn) {
+      pushLog("WARN", "system", "Network down — approvals and database operations offline.");
+      setHlAlert(true);
+      setTimeout(() => setHlAlert(false), 1200);
+      return false;
+    }
+    return true;
+  }
+
   function addRow(tableId, row) {
     setDb((prev) => ({ ...prev, [tableId]: [...(prev[tableId] || []), row] }));
     const key = `${tableId}:${row.id}`;
@@ -267,7 +524,7 @@ export default function ModuleSimulation() {
         if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
         setDbStatus("syncing");
         // Persist to Postgres
-        fetch('http://localhost:3000/api/records', {
+        fetch(`${API_BASE}/api/records`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -308,18 +565,34 @@ export default function ModuleSimulation() {
 
   function confirmAddEmployee() {
     if (!empFormName.trim() || running) return;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getLocalDateStr();
     const name = empFormName.trim();
+    // Rule: Check for name collision across active and inactive alumni records (Bug 3 Fix)
+    const duplicateEmp = (db.emp_docs || []).find(e => e.name.toLowerCase() === name.toLowerCase());
+    if (duplicateEmp) {
+      if (duplicateEmp.status.includes("Inactive")) {
+        pushLog("WARN", "emp_docs", `Cannot add employee: An alumni/inactive record for "${name}" already exists (${duplicateEmp.id} · ${duplicateEmp.status}). To prevent history collision with past assets, loans, and attendance records, please use a distinct name or suffix (e.g. "${name} Jr" or "${name} II").`);
+      } else {
+        pushLog("WARN", "emp_docs", `Cannot add employee: An active employee named "${name}" already exists (${duplicateEmp.id}). Please use a distinct name.`);
+      }
+      setShowEmpForm(false);
+      return;
+    }
     const dept = empFormDept;
     const designation = empFormDesig;
-    const empRow = { id: nextId("EMP"), name, designation, dept, status: "Active", joined: today };
+    const dailyRate = DESIGNATION_RATES[designation] || 1000;
+    const empRow = { id: nextId("EMP"), name, designation, dept, status: "Active", joined: today, dailyRate };
     const attRow = { id: nextId("ATT"), emp: name, date: today, type: "Attendance", status: "— (Ledger Initialized)" };
-    const lvRow = { id: nextId("LV"), emp: name, type: "Annual Leave", dates: "Balance", status: "12 days credited" };
+    const alRow = { id: nextId("LV"), emp: name, type: "Annual Leave Balance", dates: "Balance", balance: 12.0, status: "12.0 days credited" };
+    const clRow = { id: nextId("LV"), emp: name, type: "Casual Leave Balance", dates: "Balance", balance: 6.0, status: "6.0 days credited" };
+    const slRow = { id: nextId("LV"), emp: name, type: "Sick Leave Balance", dates: "Balance", balance: 6.0, status: "6.0 days credited" };
     setShowEmpForm(false);
     execute([
       { node: "emp_docs", op: "INSERT", text: `Creating employee master record — ${name} (${designation})`, row: empRow },
       { node: "attendance_leave", op: "INSERT", edge: ["attendance_leave", "emp_docs"], text: `Auto-initializing attendance ledger for ${name}`, row: attRow },
-      { node: "attendance_leave", op: "INSERT", edge: ["attendance_leave", "emp_docs"], text: `Allocating default leave balance for ${name} — 12 days Annual Leave credited`, row: lvRow },
+      { node: "attendance_leave", op: "INSERT", edge: ["attendance_leave", "emp_docs"], text: `Allocating 3-tier leave quota for ${name} — 12d Annual, 6d Casual, 6d Sick credited`, row: alRow },
+      { node: "attendance_leave", op: "INSERT", text: `Crediting 6.0 days Casual Leave quota for ${name}`, row: clRow },
+      { node: "attendance_leave", op: "INSERT", text: `Crediting 6.0 days Sick Leave quota for ${name}`, row: slRow },
     ]);
   }
 
@@ -327,7 +600,7 @@ export default function ModuleSimulation() {
   function actionMarkAttendance() {
     const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
     if (!activeEmps.length) { pushLog("WARN", "attendance_leave", "No active employees to mark attendance for."); return; }
-    setModal({ type: "attendance", empId: activeEmps[0].id, status: "Punch IN", date: new Date().toISOString().slice(0, 10) });
+    setModal({ type: "attendance", empId: activeEmps[0].id, status: "Punch IN", date: getLocalDateStr() });
   }
   function confirmMarkAttendance() {
     if (!biometricEnabled) {
@@ -343,6 +616,63 @@ export default function ModuleSimulation() {
       return;
     }
 
+    // Rule: Block Punch IN / Punch OUT if employee is on Approved Leave on this date
+    const punchDate = modal.date;
+    const onApprovedLeave = (db.attendance_leave || []).find(r => {
+      if (r.emp !== emp.name || r.status !== "Approved") return false;
+      if (r.startDate && r.endDate) {
+        return punchDate >= r.startDate && punchDate <= r.endDate;
+      }
+      if (r.dates) {
+        if (r.dates.includes(" to ")) {
+          const [s, e] = r.dates.split(" to ");
+          return punchDate >= s.trim() && punchDate <= e.trim();
+        }
+        return r.dates.trim() === punchDate;
+      }
+      return false;
+    });
+
+    if (onApprovedLeave) {
+      if (onApprovedLeave.type && onApprovedLeave.type.includes("On-Duty")) {
+        const dest = onApprovedLeave.purpose || "Official Travel";
+        if (onApprovedLeave.isHalfDay || Number(onApprovedLeave.days) === 0.5) {
+          const session = onApprovedLeave.session || "Half-Day Session";
+          pushLog("INFO", "attendance_leave", `Biometric Client Visit Notice: ${emp.name} is on Half-Day Client Visit (${dest} - ${session}). Physical biometric punch allowed for in-office session.`);
+        } else {
+          pushLog("INFO", "attendance_leave", `Biometric Exemption: ${emp.name} is on approved Full-Day On-Duty Travel (${dest}). Physical biometric punch waived for official duty.`);
+          setModal(null);
+          return;
+        }
+      } else if (onApprovedLeave.isHalfDay || Number(onApprovedLeave.days) === 0.5) {
+        const session = onApprovedLeave.session || "Half Day";
+        pushLog("WARN", "attendance_leave", `Biometric Notice: ${emp.name} has an approved Half-Day Leave (${session}) on ${punchDate}. Active shift punch logged.`);
+      } else {
+        pushLog("ERROR", "attendance_leave", `Biometric Punch Blocked: ${emp.name} is on official ${onApprovedLeave.type} (${onApprovedLeave.dates}). Attendance punches are strictly prohibited during full-day approved leave.`);
+        setHlAlert(true);
+        setHlNodes(new Set(["attendance_leave"]));
+        setTimeout(() => { setHlAlert(false); setHlNodes(new Set()); }, 1600);
+        setModal(null);
+        return;
+      }
+    }
+
+    // Rule 2: Block any biometric punch if attendance on this date is already recorded / regularized by HR (Present / Full Day)
+    const existingFullDay = (db.attendance_leave || []).find(r =>
+      r.emp === emp.name &&
+      r.date === modal.date &&
+      r.type === "Attendance" &&
+      (r.status === "Present" || r.status === "Work From Home")
+    );
+    if (existingFullDay) {
+      pushLog("ERROR", "attendance_leave", `Punch ${modal.status} rejected for ${emp.name}: Attendance on ${modal.date} is already completed / regularized by HR (${existingFullDay.status} · ${existingFullDay.time_logged || "Full Day"}).`);
+      setHlAlert(true);
+      setHlNodes(new Set(["attendance_leave"]));
+      setTimeout(() => { setHlAlert(false); setHlNodes(new Set()); }, 1600);
+      setModal(null);
+      return;
+    }
+
     if (modal.status === "Punch IN") {
       const alreadyPunchedIn = db.attendance_leave.some(r => r.emp === emp.name && r.date === modal.date && r.status === "Punch IN");
       if (alreadyPunchedIn) {
@@ -350,19 +680,26 @@ export default function ModuleSimulation() {
         setModal(null);
         return;
       }
+
+      const alreadyPunchedOut = db.attendance_leave.some(r => r.emp === emp.name && r.date === modal.date && r.status === "Punch OUT");
+      if (alreadyPunchedOut) {
+        pushLog("ERROR", "attendance_leave", `Punch IN rejected for ${emp.name}: Shift already completed (Punched OUT) on ${modal.date}.`);
+        setModal(null);
+        return;
+      }
     }
 
     if (modal.status === "Punch OUT") {
-      const hasPunchIn = db.attendance_leave.some(r => r.emp === emp.name && r.date === modal.date && r.status === "Punch IN");
-      if (!hasPunchIn) {
-        pushLog("ERROR", "attendance_leave", `Punch OUT rejected for ${emp.name}: No prior Punch IN found on ${modal.date}.`);
+      const alreadyPunchedOut = db.attendance_leave.some(r => r.emp === emp.name && r.date === modal.date && r.status === "Punch OUT");
+      if (alreadyPunchedOut) {
+        pushLog("ERROR", "attendance_leave", `Punch OUT rejected for ${emp.name}: Already punched OUT on ${modal.date}.`);
         setModal(null);
         return;
       }
 
-      const alreadyPunchedOut = db.attendance_leave.some(r => r.emp === emp.name && r.date === modal.date && r.status === "Punch OUT");
-      if (alreadyPunchedOut) {
-        pushLog("ERROR", "attendance_leave", `Punch OUT rejected for ${emp.name}: Already punched OUT on ${modal.date}.`);
+      const hasPunchIn = db.attendance_leave.some(r => r.emp === emp.name && r.date === modal.date && r.status === "Punch IN");
+      if (!hasPunchIn) {
+        pushLog("ERROR", "attendance_leave", `Punch OUT rejected for ${emp.name}: No prior Punch IN found on ${modal.date}.`);
         setModal(null);
         return;
       }
@@ -384,6 +721,11 @@ export default function ModuleSimulation() {
     setLeaveEmpId(activeEmps[0].id);
     setLeaveType("Annual Leave");
     setLeaveDays(1);
+    setIsHalfDay(false);
+    setHalfDaySession("First Half (Morning)");
+    setOdPurpose("Client Site Visit");
+    setCompOffWorkedDate("2026-09-13 (Sunday Deployment)");
+    setMedicalCertDate("EDD: Oct 2026 / Medical Cert #MC-9021");
     setLeaveStep(1);
     setShowLeave(true);
   }
@@ -392,17 +734,435 @@ export default function ModuleSimulation() {
     if (!leaveEmpId || running) return;
     const emp = db.emp_docs.find((e) => e.id === leaveEmpId);
     if (!emp) return;
+
+    const isOnDuty = leaveType.includes("On-Duty");
+    const isSpecialFullDayPolicy = leaveType === "Maternity Leave" || leaveType === "Paternity Leave";
+    if (isSpecialFullDayPolicy && isHalfDay) {
+      pushLog("WARN", "attendance_leave", `${leaveType} cannot be applied as a half-day. Requests must be filed in full-day increments.`);
+      setShowLeave(false);
+      return;
+    }
+    const actualDays = isHalfDay ? 0.5 : Number(leaveDays);
+    const quotaTracked = ["Annual Leave", "Casual Leave", "Sick Leave"].includes(leaveType);
+    const availableBal = quotaTracked ? getLeaveBalance(emp.name, leaveType) : 999;
+
+    if (quotaTracked && actualDays > availableBal) {
+      pushLog("WARN", "attendance_leave", `Leave rejected for ${emp.name}: Requested ${actualDays} day(s), but available ${leaveType} balance is only ${availableBal.toFixed(1)} day(s).`);
+      setShowLeave(false);
+      return;
+    }
+
+    // Special Policy Rules & Max Days Validation
+    if (leaveType === "Paternity Leave" && actualDays > 10) {
+      pushLog("WARN", "attendance_leave", `Paternity Leave rejected for ${emp.name}: Maximum corporate entitlement is 10 days (requested ${actualDays} days).`);
+      setShowLeave(false);
+      return;
+    }
+    if (leaveType === "Maternity Leave" && actualDays > 84) {
+      pushLog("WARN", "attendance_leave", `Maternity Leave rejected for ${emp.name}: Standard statutory allocation is 84 days max per cycle (requested ${actualDays} days).`);
+      setShowLeave(false);
+      return;
+    }
+    if (leaveType === "Comp Off" && actualDays > 2) {
+      pushLog("WARN", "attendance_leave", `Comp Off rejected for ${emp.name}: Maximum 2 consecutive Comp Off days can be redeemed at a time (requested ${actualDays} days).`);
+      setShowLeave(false);
+      return;
+    }
+
     const start = new Date(leaveStartDate);
     const end = new Date(start);
-    end.setDate(end.getDate() + Number(leaveDays) - 1);
-    const fmt = (d) => d.toISOString().slice(0, 10);
-    const dates = Number(leaveDays) === 1 ? fmt(start) : `${fmt(start)} to ${fmt(end)}`;
-    const row = { id: nextId("LV"), emp: emp.name, type: leaveType, days: leaveDays, dates, status: "Pending Approval" };
+    if (!isHalfDay) {
+      end.setDate(end.getDate() + Number(leaveDays) - 1);
+    }
+    const fmt = (d) => getLocalDateStr(d);
+    const newStartStr = fmt(start);
+    const newEndStr = fmt(end);
+
+    // Rule: Check if requested dates overlap with existing approved or pending leaves
+    const overlappingLeave = (db.attendance_leave || []).find(r => {
+      if (r.emp !== emp.name || (r.status !== "Approved" && r.status !== "Pending Approval")) return false;
+      let existingStart = r.startDate;
+      let existingEnd = r.endDate;
+      if (!existingStart && r.dates) {
+        if (r.dates.includes(" to ")) {
+          const [s, e] = r.dates.split(" to ");
+          existingStart = s.trim();
+          existingEnd = e.trim();
+        } else if (/^\d{4}-\d{2}-\d{2}$/.test(r.dates.trim())) {
+          existingStart = r.dates.trim();
+          existingEnd = r.dates.trim();
+        }
+      }
+      if (existingStart && existingEnd) {
+        return newStartStr <= existingEnd && existingStart <= newEndStr;
+      }
+      return false;
+    });
+
+    if (overlappingLeave) {
+      pushLog("WARN", "attendance_leave", `Leave request rejected for ${emp.name}: Dates (${newStartStr} to ${newEndStr}) overlap with an existing ${overlappingLeave.type} (${overlappingLeave.dates} - ${overlappingLeave.status}).`);
+      setShowLeave(false);
+      return;
+    }
+
+    const dates = isHalfDay ? `${fmt(start)} (${halfDaySession})` : (Number(leaveDays) === 1 ? fmt(start) : `${fmt(start)} to ${fmt(end)}`);
+    const row = {
+      id: nextId("LV"),
+      emp: emp.name,
+      type: leaveType,
+      days: actualDays,
+      dates,
+      startDate: fmt(start),
+      endDate: fmt(end),
+      purpose: isOnDuty ? (odPurpose.trim() || "Client Site Visit") : null,
+      compOffWorkedDate: leaveType === "Comp Off" ? (compOffWorkedDate.trim() || "Weekend/Holiday Shift") : null,
+      medicalCertDate: leaveType === "Maternity Leave" ? (medicalCertDate.trim() || "Medical Certificate Verified") : null,
+      isHalfDay,
+      session: isHalfDay ? halfDaySession : null,
+      status: "Pending Approval"
+    };
+
     setShowLeave(false);
+    const logPrefix = isOnDuty ? `Filing On-Duty ${isHalfDay ? `Half-Day Client Visit (${actualDays}d)` : `Travel Request (${actualDays}d)`} for ${emp.name} — ${odPurpose || "Client Visit"}` : `Filing ${leaveType} (${actualDays} day${actualDays !== 1 ? "s" : ""}) for ${emp.name}`;
     execute([
       { node: "emp_docs", op: "SELECT", text: `Checking employment status for ${emp.name}` },
-      { node: "attendance_leave", op: "INSERT", edge: ["attendance_leave", "emp_docs"], text: `Filing ${leaveType} (${leaveDays} day${Number(leaveDays) > 1 ? "s" : ""}) for ${emp.name}`, row },
-      { node: "attendance_leave", op: "SELECT", text: `🔔 Notification sent to Manager: Leave application from ${emp.name} is pending approval.` }
+      { node: "attendance_leave", op: "INSERT", edge: ["attendance_leave", "emp_docs"], text: logPrefix, row },
+      { node: "attendance_leave", op: "SELECT", text: `🔔 Notification sent to HR: ${isOnDuty ? (isHalfDay ? "Half-Day Client Visit" : "On-Duty Travel") : "Leave"} request (${actualDays}d) from ${emp.name} is pending approval.` }
+    ]);
+  }
+
+  // ── HR Approvals & Balance Deduction Logic ─────────────────────────────────
+  function handleApproveLeave(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const emp = db.emp_docs.find(e => e.name === req.emp);
+
+    const isOnDuty = req.type && req.type.includes("On-Duty");
+    const reqDays = Number(req.days) || (req.isHalfDay ? 0.5 : 1);
+    const updatedReq = { ...req, status: "Approved" };
+
+    if (isOnDuty) {
+      // Auto-credit Travel / Per Diem Allowance (Rs. 1,000 / day, Rs. 500 for Half-Day)
+      const travelAllowanceAmt = Math.round(reqDays * 1000);
+      const fmt = (n) => Number(n).toLocaleString("en-IN");
+      const allowanceRow = {
+        id: nextId("SA"),
+        emp: req.emp,
+        type: req.isHalfDay || reqDays === 0.5 ? "Travel / Client Visit (Half-Day)" : "Travel / Per Diem Allowance",
+        amount: `Rs.${fmt(travelAllowanceAmt)}`,
+        period: "Current Cycle",
+        reason: `On-Duty Trip: ${req.purpose || "Client Visit"} (${req.dates})`,
+        status: "Approved"
+      };
+
+      execute([
+        { node: "emp_docs", op: "SELECT", text: `Verifying employment status for ${req.emp}` },
+        { node: "attendance_leave", op: "UPDATE", edge: ["attendance_leave", "emp_docs"], text: `✈️ On-Duty Travel Approved: ${reqDays} day(s) for ${req.emp} (0 leaves deducted, 100% paid attendance)`, row: updatedReq },
+        { node: "special_allowances", op: "INSERT", edge: ["special_allowances", "emp_docs"], text: `💰 Travel Allowance Credited: Rs.${fmt(travelAllowanceAmt)} for ${req.emp} (${reqDays === 0.5 ? "Rs.500 prorated for Half-Day" : "Rs.1,000/day"})`, row: allowanceRow },
+        { node: "attendance_leave", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your On-Duty Travel (${reqDays}d) is approved with Rs.${fmt(travelAllowanceAmt)} Travel Allowance!` }
+      ]);
+      return;
+    }
+
+    // Special Policies: Maternity, Paternity, Comp Off (0 quota deducted from Annual/Casual/Sick)
+    if (req.type && (req.type.includes("Maternity") || req.type.includes("Paternity") || req.type.includes("Comp Off"))) {
+      let icon = "👶";
+      let title = "Maternity Benefit";
+      if (req.type.includes("Paternity")) { icon = "🍼"; title = "Paternity Leave"; }
+      else if (req.type.includes("Comp Off")) { icon = "🔄"; title = "Compensatory Off"; }
+
+      execute([
+        { node: "emp_docs", op: "SELECT", text: `Verifying statutory & corporate policy eligibility for ${req.emp}` },
+        { node: "attendance_leave", op: "UPDATE", edge: ["attendance_leave", "emp_docs"], text: `✅ ${icon} ${title} Approved: ${reqDays} day(s) for ${req.emp} (100% paid, 0 Annual/Casual quota deducted)`, row: updatedReq },
+        { node: "attendance_leave", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your ${req.type} (${reqDays}d) has been approved as 100% paid leave!` }
+      ]);
+      return;
+    }
+
+    let quotaType = "Annual Leave Balance";
+    if (req.type && req.type.includes("Casual")) quotaType = "Casual Leave Balance";
+    else if (req.type && req.type.includes("Sick")) quotaType = "Sick Leave Balance";
+
+    const balRow = (db.attendance_leave || []).find(r => {
+      if (r.emp !== req.emp) return false;
+      if (r.type === quotaType) return true;
+      if (r.dates === "Balance" && r.type && r.type.includes(quotaType.split(" ")[0])) return true;
+      return false;
+    });
+
+    const curBal = getLeaveBalance(req.emp, req.type);
+    const newBal = Math.max(0, parseFloat((curBal - reqDays).toFixed(1)));
+
+    const updatedBalRow = balRow
+      ? { ...balRow, balance: newBal, status: `${newBal.toFixed(1)} days remaining` }
+      : { id: nextId("LV"), emp: req.emp, type: quotaType, dates: "Balance", balance: newBal, status: `${newBal.toFixed(1)} days remaining` };
+
+    execute([
+      { node: "emp_docs", op: "SELECT", text: `Verifying ${req.type} entitlement for ${req.emp}` },
+      { node: "attendance_leave", op: "UPDATE", edge: ["attendance_leave", "emp_docs"], text: `✅ Leave Approved: ${reqDays} day(s) ${req.type} for ${req.emp}`, row: updatedReq },
+      { node: "attendance_leave", op: balRow ? "UPDATE" : "INSERT", text: `📉 ${quotaType} Decremented for ${req.emp}: ${curBal.toFixed(1)} → ${newBal.toFixed(1)} days remaining`, row: updatedBalRow },
+      { node: "attendance_leave", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your ${req.type} (${reqDays} day${reqDays !== 1 ? "s" : ""}) has been approved!` }
+    ]);
+  }
+
+  function handleRejectLeave(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const isOnDuty = req.type && req.type.includes("On-Duty");
+    const updatedReq = { ...req, status: "Rejected by HR" };
+    execute([
+      { node: "attendance_leave", op: "UPDATE", text: `❌ ${isOnDuty ? "On-Duty Request" : "Leave"} Rejected: ${req.type} for ${req.emp} was rejected by HR`, row: updatedReq },
+      { node: "attendance_leave", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your ${isOnDuty ? "On-Duty travel" : "leave"} application was rejected.` }
+    ]);
+  }
+
+  // ── Approved Leave Cancellation & Quota Refund Logic (Item 2.2) ─────────────
+  function handleCancelApprovedLeave(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const isOnDuty = req.type && req.type.includes("On-Duty");
+    const isMaternity = req.type && req.type.includes("Maternity");
+    const isPaternity = req.type && req.type.includes("Paternity");
+    const isCompOff = req.type && req.type.includes("Comp Off");
+    const isSpecial = isOnDuty || isMaternity || isPaternity || isCompOff;
+    const reqDays = Number(req.days) || (req.isHalfDay ? 0.5 : 1);
+
+    const updatedReq = {
+      ...req,
+      status: "Cancelled by HR (Quota Restored)",
+      cancelledDate: getLocalDateStr()
+    };
+
+    const steps = [
+      { node: "emp_docs", op: "SELECT", text: `Verifying leave record #${req.id} for cancellation — ${req.emp}` },
+      { node: "attendance_leave", op: "UPDATE", text: `↩️ Leave Cancelled: ${req.type} (${req.dates || `${reqDays}d`}) cancelled by HR for ${req.emp}`, row: updatedReq }
+    ];
+
+    if (isOnDuty) {
+      // Void travel allowance in special_allowances
+      const travelAllowance = (db.special_allowances || []).find(sa =>
+        sa.emp === req.emp && sa.status === "Approved" && (sa.reason?.includes(req.dates) || sa.type?.includes("Travel"))
+      );
+      if (travelAllowance) {
+        steps.push({
+          node: "special_allowances",
+          op: "UPDATE",
+          edge: ["special_allowances", "attendance_leave"],
+          text: `🚫 Travel Allowance Voided: ${travelAllowance.amount || "Rs.1,000"} cancelled for ${req.emp} due to trip cancellation`,
+          row: { ...travelAllowance, status: "Voided (Trip Cancelled)" },
+          alert: true
+        });
+      }
+    } else if (!isSpecial) {
+      // Refund quota to balance row
+      let quotaType = "Annual Leave Balance";
+      if (req.type && req.type.includes("Casual")) quotaType = "Casual Leave Balance";
+      else if (req.type && req.type.includes("Sick")) quotaType = "Sick Leave Balance";
+
+      const balRow = (db.attendance_leave || []).find(r => {
+        if (r.emp !== req.emp) return false;
+        if (r.type === quotaType) return true;
+        if (r.dates === "Balance" && r.type && r.type.includes(quotaType.split(" ")[0])) return true;
+        return false;
+      });
+
+      const curBal = getLeaveBalance(req.emp, req.type);
+      const newBal = parseFloat((curBal + reqDays).toFixed(1));
+      const updatedBalRow = balRow
+        ? { ...balRow, balance: newBal, status: `${newBal.toFixed(1)} days remaining` }
+        : { id: nextId("LV"), emp: req.emp, type: quotaType, dates: "Balance", balance: newBal, status: `${newBal.toFixed(1)} days remaining` };
+
+      steps.push({
+        node: "attendance_leave",
+        op: balRow ? "UPDATE" : "INSERT",
+        text: `📈 ${quotaType} Restored for ${req.emp}: ${curBal.toFixed(1)} → ${newBal.toFixed(1)} days remaining (+${reqDays}d refunded)`,
+        row: updatedBalRow
+      });
+    }
+
+    steps.push({
+      node: "attendance_leave",
+      op: "SELECT",
+      text: `🔔 Notification sent to ${req.emp}: Approved ${req.type} (${reqDays}d) was cancelled by HR and quota has been refunded.`
+    });
+
+    execute(steps);
+  }
+
+  function handleApproveLoan(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const principal = Number(String(req.amount || "0").replace(/[^\d]/g, '')) || 0;
+    const tenureYears = parseInt(req.tenure, 10) || 1;
+    const updatedReq = {
+      ...req,
+      status: "Active (Disbursed)",
+      remainingBalance: req.remainingBalance !== undefined ? req.remainingBalance : principal,
+      monthsRemaining: req.monthsRemaining !== undefined ? req.monthsRemaining : (tenureYears * 12)
+    };
+    execute([
+      { node: "emp_docs", op: "SELECT", text: `Verifying employment & credit eligibility for ${req.emp}` },
+      { node: "loans", op: "UPDATE", edge: ["loans", "emp_docs"], text: `✅ Loan Approved & Disbursed: ${req.type} (${req.amount}) to ${req.emp} | EMI: ${req.emi} (${tenureYears * 12} mo amortization)`, row: updatedReq },
+      { node: "loans", op: "SELECT", text: `💰 Finance Notification: ${req.amount} disbursed to ${req.emp}. Scheduled for monthly payroll EMI deduction.` }
+    ]);
+  }
+
+  function handleRejectLoan(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const updatedReq = { ...req, status: "Rejected by HR" };
+    execute([
+      { node: "loans", op: "UPDATE", text: `❌ Loan Rejected: ${req.type} (${req.amount}) for ${req.emp} was rejected by HR`, row: updatedReq },
+      { node: "loans", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your loan application was rejected.` }
+    ]);
+  }
+
+  // ── HR Approvals for ESS Requests ──────────────────────────────────────────
+  function handleApproveClaim(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const amt = Number(req.claimAmount) || 1200;
+    const fmt = (n) => Number(n).toLocaleString("en-IN");
+    const updatedReq = { ...req, status: "Approved" };
+
+    const allowanceRow = {
+      id: nextId("SA"),
+      emp: req.emp,
+      type: req.claimCategory || "Expense Reimbursement",
+      amount: `Rs.${fmt(amt)}`,
+      period: "Current Cycle",
+      reason: `ESS Reimbursement: ${req.claimCategory || "Expense"} (${req.details || ""})`,
+      status: "Approved"
+    };
+
+    execute([
+      { node: "emp_docs", op: "SELECT", text: `Verifying employment record for ${req.emp}` },
+      { node: "special_allowances", op: "INSERT", edge: ["special_allowances", "emp_docs"], text: `💰 Reimbursement Approved: Rs.${fmt(amt)} for ${req.emp} added to Special Allowances (Disbursable in Payroll)`, row: allowanceRow },
+      { node: "ess", op: "UPDATE", edge: ["ess", "special_allowances"], text: `ESS Reimbursement Claim Approved: ${req.id} for ${req.emp}`, row: updatedReq },
+      { node: "special_allowances", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your reimbursement claim of Rs.${fmt(amt)} was approved and credited to Special Allowances for next payroll payout!` }
+    ]);
+  }
+
+  function handleRejectClaim(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const updatedReq = { ...req, status: "Rejected by HR" };
+    execute([
+      { node: "ess", op: "UPDATE", text: `❌ Reimbursement Claim Rejected: ${req.claimCategory || "Claim"} for ${req.emp} was rejected by HR`, row: updatedReq },
+      { node: "ess", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your reimbursement claim of Rs.${(Number(req.claimAmount) || 0).toLocaleString("en-IN")} was rejected.` }
+    ]);
+  }
+
+  function handleApproveAttendanceCorrection(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const updatedReq = { ...req, status: "Approved" };
+
+    let status = "Punch IN";
+    let time = "09:00";
+    if (req.corrSession && (req.corrSession.includes("Evening") || req.corrSession.includes("OUT"))) {
+      status = "Punch OUT";
+      time = "18:00";
+    } else if (req.corrSession && req.corrSession.includes("Full Day")) {
+      status = "Present";
+      time = "09:00 - 18:00";
+    }
+
+    const attRow = {
+      id: nextId("ATT"),
+      emp: req.emp,
+      date: req.corrDate || getLocalDateStr(),
+      time_logged: time,
+      type: "Attendance",
+      status,
+      mode: "Biometric (HR Regularized)",
+      reason: `Regularization Approved: ${req.corrReason || "Biometric Failure"}`
+    };
+
+    execute([
+      { node: "emp_docs", op: "SELECT", text: `Verifying attendance master for ${req.emp}` },
+      { node: "attendance_leave", op: "INSERT", edge: ["attendance_leave", "emp_docs"], text: `⏱️ Attendance Sheet Updated: ${req.emp} marked ${status} on ${attRow.date} (${req.corrReason || "Regularized"})`, row: attRow },
+      { node: "ess", op: "UPDATE", edge: ["ess", "attendance_leave"], text: `ESS Attendance Regularization Approved: ${req.id} for ${req.emp}`, row: updatedReq },
+      { node: "attendance_leave", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your attendance punch on ${attRow.date} (${req.corrSession}) has been approved and logged to Attendance.` }
+    ]);
+  }
+
+  function handleRejectAttendanceCorrection(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const updatedReq = { ...req, status: "Rejected by HR" };
+    execute([
+      { node: "ess", op: "UPDATE", text: `❌ Attendance Regularization Rejected for ${req.emp} (${req.corrDate})`, row: updatedReq },
+      { node: "ess", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your attendance regularization request for ${req.corrDate} was rejected by HR.` }
+    ]);
+  }
+
+  function handleApproveDocRequest(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const updatedReq = { ...req, status: "Approved (Issued)" };
+    const docTitle = req.docType || "Official HR Document";
+    execute([
+      { node: "emp_docs", op: "SELECT", text: `Verifying digital signature key and authorized company seal for ${req.emp}` },
+      { node: "ess", op: "UPDATE", edge: ["ess", "emp_docs"], text: `📄 HR Document Issued: "${docTitle}" digitally authorized & sealed for ${req.emp}`, row: updatedReq },
+      { node: "emp_docs", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your requested "${docTitle}" has been approved and officially issued with company seal!` }
+    ]);
+  }
+
+  function handleRejectDocRequest(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const updatedReq = { ...req, status: "Rejected by HR" };
+    execute([
+      { node: "ess", op: "UPDATE", text: `❌ HR Document Request Rejected: "${req.docType || "Document"}" for ${req.emp}`, row: updatedReq },
+      { node: "emp_docs", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your request for "${req.docType || "Document"}" was rejected by HR.` }
+    ]);
+  }
+
+  function handleApproveProfileUpdate(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const emp = db.emp_docs.find(e => e.name === req.emp);
+    const updatedReq = { ...req, status: "Approved" };
+
+    const fieldMap = {
+      "Residential Address": "address",
+      "Personal Mobile Number": "phone",
+      "Personal Phone": "phone",
+      "Emergency Contact": "emergency_contact",
+      "Emergency Contact Person": "emergency_contact",
+      "Personal Email Address": "personal_email",
+      "Personal Email": "personal_email",
+      "Bank Account & IFSC": "bank_details",
+      "Blood Group": "blood_group"
+    };
+    const empKey = fieldMap[req.profileField] || "address";
+    const updatedEmp = emp ? { ...emp, [empKey]: req.profileValue } : null;
+
+    const steps = [
+      { node: "emp_docs", op: "SELECT", text: `Verifying digital KYC & address/identity proof for ${req.emp}` },
+      ...(updatedEmp ? [{ node: "emp_docs", op: "UPDATE", edge: ["ess", "emp_docs"], text: `👤 Master Profile Updated: ${req.profileField} updated for ${req.emp}`, row: updatedEmp }] : []),
+      { node: "ess", op: "UPDATE", text: `ESS Profile Modification Approved: ${req.id} for ${req.emp}`, row: updatedReq },
+      { node: "emp_docs", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your profile modification (${req.profileField}) has been verified and updated in Employee Master!` }
+    ];
+
+    execute(steps);
+  }
+
+  function handleRejectProfileUpdate(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const updatedReq = { ...req, status: "Rejected by HR" };
+    execute([
+      { node: "ess", op: "UPDATE", text: `❌ Profile Update Rejected: ${req.profileField} for ${req.emp} was rejected by HR`, row: updatedReq },
+      { node: "emp_docs", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your profile modification request for ${req.profileField} was rejected by HR.` }
+    ]);
+  }
+
+  function handleResolveTicket(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const updatedReq = { ...req, status: "Resolved & Closed" };
+    const targetNode = (req.ticketCategory?.includes("IT") || req.ticketCategory?.includes("Hardware") || req.ticketCategory?.includes("Laptop") || req.ticketCategory?.includes("Equipment")) ? "assets" : (req.ticketCategory?.includes("Payroll") || req.ticketCategory?.includes("Salary") ? "payroll" : "emp_docs");
+    execute([
+      { node: targetNode, op: "SELECT", text: `Dispatching service resolution & technical diagnostics for Ticket #${req.id}` },
+      { node: "ess", op: "UPDATE", edge: ["ess", targetNode], text: `🎫 Helpdesk Ticket Resolved: #${req.id} (${req.ticketSubject || req.ticketCategory || "Issue"}) for ${req.emp}`, row: updatedReq },
+      { node: "emp_docs", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your Helpdesk Ticket #${req.id} (${req.ticketSubject || "Issue"}) has been resolved & closed!` }
+    ]);
+  }
+
+  function handleEscalateTicket(req) {
+    if (running || !checkNetworkOrWarn()) return;
+    const updatedReq = { ...req, status: "Escalated to Tier-2 Support" };
+    execute([
+      { node: "ess", op: "UPDATE", text: `⚠️ Ticket #${req.id} Escalated: Priority raised to Critical Tier-2 for ${req.emp}`, row: updatedReq },
+      { node: "emp_docs", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Ticket #${req.id} has been escalated to Tier-2 Engineering / Facilities Lead.` }
     ]);
   }
 
@@ -410,7 +1170,7 @@ export default function ModuleSimulation() {
   function actionLogAppraisal() {
     const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
     if (!activeEmps.length) { pushLog("WARN", "performance_cycles", "No active employees to log appraisal for."); return; }
-    setModal({ type: "appraisal", empId: activeEmps[0].id, cycle: "Q3 FY2026", rating: "Meets Expectations", kpi: 80 });
+    setModal({ type: "appraisal", empId: activeEmps[0].id, fiscalYear: 2026, quarter: "Q3", cycle: "Q3 FY2026", rating: "Meets Expectations", kpi: 80 });
   }
   function confirmLogAppraisal() {
     const emp = db.emp_docs.find(e => e.id === modal.empId); if (!emp) return;
@@ -432,29 +1192,83 @@ export default function ModuleSimulation() {
     ]);
   }
 
+  // ── Manage Assets (Unified Allocation & In-Service Return) ──────────────────
+  function actionManageAssets(prefillSubTab = "allocate", prefillAssetId = null) {
+    const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
+    if (!activeEmps.length) { pushLog("WARN", "company_assets", "No active employees to manage assets for."); return; }
+    const firstEmp = activeEmps[0];
+    const allocatedAssets = (db.assets || []).filter(r => r.status === "Allocated");
+    const targetAsset = prefillAssetId ? (allocatedAssets.find(a => a.id === prefillAssetId) || allocatedAssets[0]) : allocatedAssets[0];
+    const targetEmp = (prefillSubTab === "return" && targetAsset) ? ((db.emp_docs || []).find(e => e.name === targetAsset.emp) || firstEmp) : firstEmp;
+
+    setModal({
+      type: "manage_asset",
+      subTab: prefillSubTab,
+      empId: targetEmp.id,
+      assetType: "Laptop",
+      assetId: targetAsset ? targetAsset.id : (allocatedAssets[0]?.id || ""),
+      reason: "Hardware Refresh / Upgrade"
+    });
+  }
+
   // ── Assign Asset ───────────────────────────────────────────────────────────
   function actionAssignAsset() {
-    const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
-    if (!activeEmps.length) { pushLog("WARN", "company_assets", "No active employees to assign assets to."); return; }
-    setModal({ type: "asset", empId: activeEmps[0].id, assetType: "Laptop" });
+    actionManageAssets("allocate");
   }
   function confirmAssignAsset() {
     const emp = db.emp_docs.find(e => e.id === modal.empId); if (!emp) return;
 
+    if (emp.status.includes("Inactive")) {
+      pushLog("WARN", "company_assets", `Cannot assign asset: ${emp.name} is Inactive (${emp.status}).`);
+      setModal(null);
+      return;
+    }
+
     // Rule: Block duplicate asset type for the same employee
-    const alreadyHas = db.assets.some(r => r.emp === emp.name && r.asset === modal.assetType && r.status === "Allocated");
+    const alreadyHas = (db.assets || []).some(r =>
+      r.emp?.trim().toLowerCase() === emp.name?.trim().toLowerCase() &&
+      r.asset === modal.assetType &&
+      (!r.status?.includes("Returned") && !r.status?.includes("Recovered"))
+    );
     if (alreadyHas) {
-      pushLog("WARN", "company_assets", `${emp.name} already has an allocated ${modal.assetType}. Return it before assigning a new one.`);
+      pushLog("WARN", "company_assets", `${emp.name} already has an active ${modal.assetType}. Return it before assigning a new one.`);
       setModal(null);
       return;
     }
 
     const code = `AST-${Math.floor(Math.random() * 9000 + 1000)}`;
-    const row = { id: nextId("ASST"), emp: emp.name, asset: modal.assetType, code, status: "Allocated" };
+    const row = { id: nextId("ASST"), emp: emp.name, asset: modal.assetType, code, status: "Allocated", department: emp.dept };
     setModal(null);
     execute([
       { node: "emp_docs", op: "SELECT", text: `Verifying ${emp.name} for asset allocation` },
-      { node: "assets", op: "INSERT", edge: ["assets", "emp_docs"], text: `Assigning ${modal.assetType} (${code}) to ${emp.name}`, row },
+      { node: "assets", op: "INSERT", edge: ["assets", "emp_docs"], text: `Assigning ${modal.assetType} (${code}) to ${emp.name} (${emp.dept})`, row },
+    ]);
+  }
+
+  // ── Return Asset (Item 2.1) ────────────────────────────────────────────────
+  function actionReturnAsset(prefillAssetId = null) {
+    actionManageAssets("return", prefillAssetId);
+  }
+
+  function confirmReturnAsset() {
+    if (running || !checkNetworkOrWarn()) return;
+    const asset = (db.assets || []).find(a => a.id === modal.assetId);
+    if (!asset) {
+      pushLog("WARN", "company_assets", "Selected asset could not be found.");
+      setModal(null);
+      return;
+    }
+    const returnReason = modal.reason || "Normal Project Return";
+    const updatedAsset = {
+      ...asset,
+      status: `Returned (${returnReason})`,
+      returnedDate: getLocalDateStr()
+    };
+    setModal(null);
+    execute([
+      { node: "emp_docs", op: "SELECT", text: `Verifying custodian profile for ${asset.emp}` },
+      { node: "assets", op: "UPDATE", edge: ["assets", "emp_docs"], text: `📦 Asset Returned: ${asset.asset} (${asset.code || asset.id}) returned by ${asset.emp} [Reason: ${returnReason}]`, row: updatedAsset },
+      { node: "assets", op: "SELECT", text: `🔔 Inventory Notification: ${asset.asset} checked back into IT Inventory pool. Hardware slot cleared for ${asset.emp}.` }
     ]);
   }
 
@@ -468,7 +1282,7 @@ export default function ModuleSimulation() {
     const emp = db.emp_docs.find(e => e.id === modal.empId); if (!emp) return;
 
     // Rule: Block new loan if employee already has one pending or active
-    const pendingLoan = db.loans.find(r => r.emp === emp.name && (r.status === "Under Review" || r.status === "Active"));
+    const pendingLoan = db.loans.find(r => r.emp === emp.name && (r.status === "Under Review" || r.status.includes("Active")));
     if (pendingLoan) {
       pushLog("WARN", "employee_loans", `${emp.name} already has a ${pendingLoan.type} ${pendingLoan.status === "Under Review" ? "pending review" : "currently active"}. Clear existing loan before applying for a new one.`);
       setModal(null);
@@ -488,100 +1302,307 @@ export default function ModuleSimulation() {
     ]);
   }
 
-  // ── Nominate Award — performance-based ─────────────────────────────────────
+  // ── Nominate Award Modal & Confirmation ────────────────────────────────────
+  const AWARD_REWARDS = {
+    "Star Performer": 5000,
+    "Innovation Champion": 3500,
+    "Team Player": 2000,
+    "Rising Star": 1500,
+    "Spot Excellence Award": 1500,
+  };
+
   function actionNominateAward() {
     const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
     if (!activeEmps.length) { pushLog("WARN", "excellence_awards", "No active employees to nominate."); return; }
+    const firstEmp = activeEmps[0];
+    const perfRecords = db.performance.filter(r => r.emp === firstEmp.name);
+    const latest = perfRecords.length ? perfRecords[perfRecords.length - 1] : null;
+    let defCat = "Team Player";
+    if (latest?.rating === "Outstanding") defCat = "Star Performer";
+    else if (latest?.rating === "Exceeds Expectations") defCat = "Innovation Champion";
+    else if (latest?.rating === "Meets Expectations") defCat = "Team Player";
 
-    // Pick a random active employee
-    const emp = pick(activeEmps);
+    setModal({
+      type: "award",
+      empId: firstEmp.id,
+      category: defCat,
+      period: "Q3 FY2026",
+      cashReward: AWARD_REWARDS[defCat] || 2000,
+    });
+  }
 
-    // Check their performance records
-    const perfRecords = db.performance.filter(r => r.emp === emp.name);
+  function confirmNominateAward() {
+    const emp = db.emp_docs.find(e => e.id === modal.empId); if (!emp) return;
 
-    if (!perfRecords.length) {
-      pushLog("WARN", "excellence_awards",
-        `Cannot nominate ${emp.name} — no appraisal record found. Log an appraisal first.`);
+    // Rule: An employee can only be nominated once per cycle
+    const cyclePeriod = modal.period || "Q3 FY2026";
+    const alreadyNominated = (db.awards || []).some(
+      a => a.emp === emp.name && a.period === cyclePeriod
+    );
+    if (alreadyNominated) {
+      pushLog("WARN", "excellence_awards", `Nomination rejected — ${emp.name} is already nominated for an award in ${cyclePeriod}. Only one nomination per cycle is permitted.`);
+      setModal(null);
       return;
     }
 
-    // Use the most recent appraisal rating to determine the award category
-    const latestRating = perfRecords[perfRecords.length - 1].rating;
-    const latestKpi    = perfRecords[perfRecords.length - 1].kpiScore || "—";
-
-    const RATING_TO_AWARD = {
-      "Outstanding":           "Star Performer",
-      "Exceeds Expectations":  "Innovation Champion",
-      "Meets Expectations":    "Team Player",
-      "Needs Improvement":     "Rising Star",
-      "Unsatisfactory":        "Rising Star",
+    const perfRecords = db.performance.filter(r => r.emp === emp.name);
+    const latest = perfRecords.length ? perfRecords[perfRecords.length - 1] : null;
+    const rating = latest ? latest.rating : "Direct Spot Nomination";
+    const kpi = latest ? latest.kpiScore : "—";
+    const rewardAmt = modal.cashReward || AWARD_REWARDS[modal.category] || 2000;
+    const fmt = (n) => Number(n).toLocaleString("en-IN");
+    const row = {
+      id: nextId("AWD"),
+      emp: emp.name,
+      category: modal.category,
+      rating,
+      kpi,
+      period: modal.period || "Q3 FY2026",
+      reward: `Rs.${fmt(rewardAmt)}`,
+      status: "Nominated",
+      bonusDisbursed: false,
     };
+    setModal(null);
 
-    const category = RATING_TO_AWARD[latestRating] || "Team Player";
-    const row = { id: nextId("AWD"), emp: emp.name, category, rating: latestRating, kpi: latestKpi, period: "Q3 FY2026", status: "Nominated" };
+    const steps = [
+      { node: "emp_docs", op: "SELECT", text: `Loading nominee profile — ${emp.name}` },
+    ];
+    if (latest) {
+      steps.push({
+        node: "performance", op: "SELECT", edge: ["awards", "performance"],
+        text: `Appraisal verified for ${emp.name} | Rating: ${rating} | KPI: ${kpi}`
+      });
+    }
+    steps.push({
+      node: "awards", op: "INSERT", edge: ["awards", "emp_docs"],
+      text: `Nominating ${emp.name} for "${modal.category}" | Cash Reward Rs.${fmt(rewardAmt)}`, row
+    });
+    steps.push({
+      node: "awards", op: "SELECT",
+      text: `🎉 Notification sent to ${emp.name}: Nominated for ${modal.category} with Rs.${fmt(rewardAmt)} bonus!`
+    });
+    execute(steps);
+  }
 
-    execute([
-      { node: "emp_docs",   op: "SELECT", text: `Loading nominee profile — ${emp.name}` },
-      { node: "performance", op: "SELECT", edge: ["awards", "performance"],
-        text: `Checking appraisal record — ${emp.name} | Rating: ${latestRating} | KPI: ${latestKpi}` },
-      { node: "awards", op: "INSERT", edge: ["awards", "emp_docs"],
-        text: `Nominating ${emp.name} for "${category}" based on ${latestRating} rating`, row },
-      { node: "awards", op: "SELECT",
-        text: `🎉 Notification sent to ${emp.name}: Nominated for ${category} — well deserved!` }
-    ]);
+  function getDaysInMonth(year, monthNameOrKey = "Oct") {
+    const ALL_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const mStr = String(monthNameOrKey).trim().slice(0, 3);
+    const idx = ALL_MONTHS.findIndex(m => m.toLowerCase() === mStr.toLowerCase());
+    const mIdx = idx !== -1 ? idx : 9;
+    const y = parseInt(year, 10) || 2026;
+    return new Date(y, mIdx + 1, 0).getDate();
+  }
+
+  function getWorkingDaysInMonthUpToDate(dateStr) {
+    if (!dateStr) return { workingDays: 15, weekendDays: 6, totalCalendarDays: 21 };
+    const parts = dateStr.split("-");
+    const y = parseInt(parts[0], 10) || 2026;
+    const m = (parseInt(parts[1], 10) || 9) - 1; // 0-indexed month
+    const exitDay = Math.min(31, Math.max(1, parseInt(parts[2], 10) || 21));
+
+    let workingDays = 0;
+    let weekendDays = 0;
+    for (let day = 1; day <= exitDay; day++) {
+      const cur = new Date(y, m, day);
+      const dow = cur.getDay(); // 0 = Sunday, 6 = Saturday
+      if (dow === 0 || dow === 6) {
+        weekendDays++;
+      } else {
+        workingDays++;
+      }
+    }
+    return { workingDays, weekendDays, totalCalendarDays: exitDay };
   }
 
   function actionRunPayroll() {
     const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
     if (!activeEmps.length) { pushLog("WARN", "payroll_records", "No active employees to process payroll for."); return; }
+
+    const initialDays = getDaysInMonth(2026, "Oct");
+    setModal({
+      type: "payroll_cycle",
+      month: "Oct 2026",
+      selectedYear: 2026,
+      mode: "standard",
+      standardDays: initialDays
+    });
+  }
+
+  function confirmRunPayrollCycle() {
+    if (!modal || modal.type !== "payroll_cycle") return;
+    const targetMonth = modal.month ? modal.month.trim() : "Oct 2026";
+    const mode = modal.mode || "standard";
+    const targetYear = parseInt(targetMonth.match(/\d{4}/)?.[0] || String(modal.selectedYear || 2026), 10);
+    const monthKey = targetMonth.slice(0, 3);
+    const monthDays = getDaysInMonth(targetYear, monthKey);
+    setModal(null);
+    executeRunPayroll(targetMonth, mode, monthDays);
+  }
+
+  function executeRunPayroll(targetMonth = "Oct 2026", mode = "standard", maxMonthDays = null) {
     const steps = [];
-    const PAID_LEAVE_TYPES = ["Annual Leave", "Sick Leave", "Casual Leave", "Maternity Leave", "Paternity Leave", "Comp Off"];
+    const PAID_LEAVE_TYPES = ["Annual Leave", "Sick Leave", "Casual Leave", "Maternity Leave", "Paternity Leave", "Comp Off", "On-Duty (OD) / Business Travel"];
+
+    const targetYear = parseInt(targetMonth.match(/\d{4}/)?.[0] || "2026", 10);
+    const monthMap = { jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12" };
+    const monthKey = targetMonth.slice(0, 3).toLowerCase();
+    const monthNum = monthMap[monthKey];
+    const monthPrefix = monthNum ? `${targetYear}-${monthNum}` : null;
+    const monthDays = maxMonthDays || getDaysInMonth(targetYear, monthKey);
+
+    // Strict Separation & Post-Exit Payroll Protection Guards
+    const activeEmps = db.emp_docs.filter(e => {
+      // Guard 1: Exclude archived / inactive employees
+      if (e.status.includes("Inactive")) return false;
+
+      // Guard 2: Exclude employees who already received their Full & Final (F&F) Settlement
+      const hasFF = (db.payroll || []).some(p => p.emp === e.name && p.payrollMode === "Full & Final Settlement");
+      if (hasFF) return false;
+
+      // Guard 3: Exclude employees whose notice period ended before this payroll cycle
+      if (e.exit_date && monthPrefix) {
+        const exitMonthPrefix = e.exit_date.slice(0, 7);
+        if (monthPrefix > exitMonthPrefix) return false;
+      }
+
+      return true;
+    });
+
+    if (!activeEmps.length) {
+      pushLog("WARN", "payroll_records", `No eligible active employees to process for ${targetMonth} (inactive, post-exit, or already settled via F&F).`);
+      return;
+    }
 
     activeEmps.forEach((emp) => {
-      // Find attendance/leave records for this employee
-      const empAtt = db.attendance_leave.filter(record => record.emp === emp.name);
-
+      let billableDays = monthDays;
       let presentDays = 0;
-      let inCount = 0;
-      let outCount = 0;
 
-      empAtt.forEach(record => {
-        if (record.status === "Present" || record.status === "Work From Home") {
-          presentDays += 1;
-        } else if (record.status === "Punch IN") {
-          inCount += 1;
-        } else if (record.status === "Punch OUT") {
-          outCount += 1;
-        } else if (record.status === "Half-day") {
-          presentDays += 0.5;
-        } else if (PAID_LEAVE_TYPES.includes(record.status)) {
-          if (record.date && record.date.includes("days")) {
-            presentDays += parseInt(record.date) || 1;
-          } else {
-            presentDays += 1;
+      if (mode === "attendance") {
+        const empAtt = db.attendance_leave.filter(record => {
+          if (record.emp !== emp.name) return false;
+          if (monthPrefix) {
+            const d = record.date || record.startDate || "";
+            return d.startsWith(monthPrefix);
           }
-        }
-      });
+          return true;
+        });
 
-      // Calculate paired punches (every full pair = 1 day)
-      presentDays += Math.min(inCount, outCount);
+        // Track day credits per calendar date to eliminate double-counting
+        const dayCredits = {};
 
-      const dailyRate = DESIGNATION_RATES[emp.designation] || 1000;
-      const baseGross = presentDays * dailyRate;
+        // 1. Process Approved Paid Leaves & On-Duty Travel
+        empAtt.forEach(record => {
+          const isApprovedPaidLeave = (record.status === "Approved" && (PAID_LEAVE_TYPES.includes(record.type) || (record.type && record.type.includes("On-Duty")))) ||
+            (PAID_LEAVE_TYPES.includes(record.status) || (record.status && record.status.includes("On-Duty")));
 
-      const empAllowances = db.special_allowances.filter(sa => sa.emp === emp.name && sa.status === "Approved");
+          if (isApprovedPaidLeave) {
+            const days = Number(record.days) || (record.isHalfDay ? 0.5 : 1);
+            if (record.startDate && record.endDate) {
+              const cur = new Date(record.startDate);
+              const last = new Date(record.endDate);
+              while (cur <= last) {
+                const dStr = getLocalDateStr(cur);
+                if (!monthPrefix || dStr.startsWith(monthPrefix)) {
+                  dayCredits[dStr] = Math.min(1, (dayCredits[dStr] || 0) + (record.isHalfDay ? 0.5 : 1));
+                }
+                cur.setDate(cur.getDate() + 1);
+              }
+            } else if (record.date) {
+              dayCredits[record.date] = Math.min(1, (dayCredits[record.date] || 0) + (record.isHalfDay ? 0.5 : days));
+            } else if (record.dates && /^\d{4}-\d{2}-\d{2}$/.test(record.dates.trim())) {
+              const dStr = record.dates.trim();
+              dayCredits[dStr] = Math.min(1, (dayCredits[dStr] || 0) + (record.isHalfDay ? 0.5 : days));
+            }
+          }
+        });
+
+        // 2. Process Verified Present / WFH / Regularized Attendance entries
+        empAtt.forEach(record => {
+          if (record.type === "Attendance" && (record.status === "Present" || record.status === "Work From Home")) {
+            if (record.date) {
+              dayCredits[record.date] = 1.0;
+            }
+          } else if (record.type === "Attendance" && record.status === "Half-day") {
+            if (record.date) {
+              dayCredits[record.date] = Math.min(1, (dayCredits[record.date] || 0) + 0.5);
+            }
+          }
+        });
+
+        // 3. Process Physical Biometric Punches (Punch IN + Punch OUT pair on same date)
+        const punchesByDate = {};
+        empAtt.forEach(record => {
+          if (record.type === "Attendance" && (record.status === "Punch IN" || record.status === "Punch OUT")) {
+            if (record.date) {
+              if (!punchesByDate[record.date]) punchesByDate[record.date] = { in: false, out: false };
+              if (record.status === "Punch IN") punchesByDate[record.date].in = true;
+              if (record.status === "Punch OUT") punchesByDate[record.date].out = true;
+            }
+          }
+        });
+
+        Object.entries(punchesByDate).forEach(([d, p]) => {
+          if (p.in && p.out) {
+            dayCredits[d] = Math.min(1, (dayCredits[d] || 0) + 1.0);
+          }
+        });
+
+        presentDays = Object.values(dayCredits).reduce((sum, v) => sum + v, 0);
+        billableDays = Math.min(presentDays, monthDays);
+      } else {
+        // Standard Mode: month calendar days minus unpaid leaves
+        const unpaidLeaves = (db.attendance_leave || []).filter(r => {
+          if (r.emp !== emp.name || r.type !== "Unpaid Leave" || r.status !== "Approved") return false;
+          if (monthPrefix) {
+            const d = r.date || r.startDate || "";
+            return d.startsWith(monthPrefix);
+          }
+          return true;
+        });
+        const unpaidDays = unpaidLeaves.reduce((sum, r) => sum + (Number(r.days) || 1), 0);
+        presentDays = Math.max(0, monthDays - unpaidDays);
+        billableDays = Math.min(presentDays, monthDays);
+      }
+
+      // Exit-Month Proration: If notice period ends within this cycle, cap days worked up to exit date
+      if (emp.exit_date && monthPrefix && emp.exit_date.slice(0, 7) === monthPrefix) {
+        const exitWd = getWorkingDaysInMonthUpToDate(emp.exit_date).workingDays;
+        billableDays = Math.min(billableDays, exitWd);
+      }
+
+      const dailyRate = emp.dailyRate || (emp.designation ? DESIGNATION_RATES[emp.designation] : 1000) || 1000;
+      const baseGross = billableDays * dailyRate;
+
+      const empAllowances = db.special_allowances.filter(sa =>
+        sa.emp === emp.name && (sa.status === "Approved" || (sa.status === "Disbursed" && sa.disbursedMonth === targetMonth))
+      );
       const totalAllowances = empAllowances.reduce((sum, sa) => {
         const amountStr = String(sa.amount).replace(/[^\d]/g, '');
         return sum + Number(amountStr);
       }, 0);
 
+      // Award Bonus Logic
+      const empAwards = (db.awards || []).filter(a =>
+        a.emp === emp.name && (a.bonusDisbursed !== true || a.disbursedMonth === targetMonth)
+      );
+      let awardBonus = 0;
+      let awardLabel = "";
+      if (empAwards.length > 0) {
+        empAwards.forEach(a => {
+          const amt = Number(String(a.reward || "0").replace(/[^\d]/g, '')) ||
+            (AWARD_REWARDS[a.category] || 1500);
+          awardBonus += amt;
+        });
+      }
+
       // Performance Bonus Logic
-      const perfRecords = db.performance.filter(r => r.emp === emp.name && r.bonusPaid !== true);
+      const perfRecords = db.performance.filter(r =>
+        r.emp === emp.name && (r.bonusPaid !== true || r.disbursedMonth === targetMonth)
+      );
       let perfBonus = 0;
       let perfLabel = "";
       let latestPerf = null;
       if (perfRecords.length > 0) {
-        // Grab the most recent rating (last in array)
         latestPerf = perfRecords[perfRecords.length - 1];
         if (latestPerf.rating === "Outstanding") {
           perfBonus = 5000;
@@ -589,38 +1610,136 @@ export default function ModuleSimulation() {
         } else if (latestPerf.rating === "Exceeds Expectations") {
           perfBonus = 2500;
           perfLabel = " (+Rs.2,500 bonus)";
+        } else if (latestPerf.kpiScore === "100%" || latestPerf.kpiScore === 100) {
+          perfBonus = 3000;
+          perfLabel = " (+Rs.3,000 100% KPI bonus)";
         }
       }
 
-      const gross = baseGross + totalAllowances + perfBonus;
+      // Active Loan EMI Deductions
+      const empActiveLoans = (db.loans || []).filter(l => l.emp === emp.name && (l.status === "Active" || l.status === "Active (Disbursed)"));
+      let loanEmiSum = 0;
+      empActiveLoans.forEach(l => {
+        const emiNum = Number(String(l.emi || "0").replace(/[^\d]/g, ''));
+        if (!isNaN(emiNum)) loanEmiSum += emiNum;
+      });
+
+      const gross = baseGross + totalAllowances + perfBonus + awardBonus;
       const pf = Math.round(gross * 0.12);
       const tds = Math.round(gross * 0.07);
-      const net = gross - pf - tds;
+      const statutoryDeductions = pf + tds;
+      const netAvailable = Math.max(0, gross - statutoryDeductions);
+      const emiShortfall = loanEmiSum > netAvailable ? loanEmiSum - netAvailable : 0;
+      const actualEmiDeducted = Math.min(loanEmiSum, netAvailable);
+      const net = Math.max(0, netAvailable - actualEmiDeducted);
       const fmt = (n) => n.toLocaleString("en-IN");
+      if (awardBonus > 0) awardLabel = ` (+Rs.${fmt(awardBonus)} award)`;
+      const emiLabel = loanEmiSum > 0 ? ` | Loan EMI -Rs.${fmt(actualEmiDeducted)}${emiShortfall > 0 ? ` (⚠️ Arrears Shortfall: Rs.${fmt(emiShortfall)})` : ""}` : "";
 
       steps.push({ node: "emp_docs", op: "SELECT", text: `Reading salary structure for ${emp.name}` });
-      steps.push({ node: "attendance_leave", op: "SELECT", edge: ["payroll", "attendance_leave"], text: `Aggregating attendance & leave for ${emp.name}` });
+      steps.push({ node: "attendance_leave", op: "SELECT", edge: ["payroll", "attendance_leave"], text: `Aggregating ${targetMonth} attendance & leave for ${emp.name} (${mode === "standard" ? "Standard 30d Mode" : "Strict Attendance Mode"})` });
+
+      if (emiShortfall > 0) {
+        steps.push({
+          node: "loans",
+          op: "WARN",
+          edge: ["payroll", "loans"],
+          alert: true,
+          text: `⚠️ Loan EMI Arrears: ${emp.name}'s loan EMI (Rs.${fmt(loanEmiSum)}) exceeded net earnings (Rs.${fmt(netAvailable)}). Shortfall of Rs.${fmt(emiShortfall)} rolled over as uncollected arrears.`
+        });
+      }
+
+      if (loanEmiSum > 0 && empActiveLoans.length > 0) {
+        steps.push({ node: "loans", op: "SELECT", edge: ["payroll", "loans"], text: `Deducting active loan EMI (Rs.${fmt(actualEmiDeducted)} collected${emiShortfall > 0 ? `, Rs.${fmt(emiShortfall)} shortfall` : ""}) for ${emp.name}` });
+
+        let remainingDeductionBudget = actualEmiDeducted;
+        empActiveLoans.forEach(l => {
+          const emiNum = Number(String(l.emi || "0").replace(/[^\d]/g, ''));
+          const isSameMonth = l.lastDeductionMonth === targetMonth;
+          const currentTenureMonths = l.monthsRemaining !== undefined
+            ? l.monthsRemaining
+            : ((parseInt(l.tenure, 10) || 3) * 12);
+          const currentBal = l.remainingBalance !== undefined
+            ? l.remainingBalance
+            : (Number(String(l.amount).replace(/[^\d]/g, '')) || 100000);
+
+          const deductedForThisLoan = Math.min(emiNum, remainingDeductionBudget);
+          remainingDeductionBudget = Math.max(0, remainingDeductionBudget - deductedForThisLoan);
+
+          // Bug 2 Fix: Tenure only decrements when payment is collected.
+          // If 0 was deducted due to shortfall, tenure freezes.
+          // Loan is strictly marked "Fully Repaid" when nextBal === 0 (never prematurely while balance remains).
+          const nextMonths = isSameMonth
+            ? currentTenureMonths
+            : (deductedForThisLoan > 0 ? Math.max(0, currentTenureMonths - 1) : currentTenureMonths);
+          const nextBal = isSameMonth ? currentBal : Math.max(0, currentBal - deductedForThisLoan);
+          const isRepaid = nextBal === 0;
+          const hasShortfall = emiNum > deductedForThisLoan;
+
+          const updatedLoan = {
+            ...l,
+            monthsRemaining: nextMonths,
+            remainingBalance: nextBal,
+            status: isRepaid ? "Fully Repaid" : (hasShortfall ? "Active (EMI in Arrears)" : l.status),
+            lastDeductionMonth: targetMonth
+          };
+          if (emiShortfall > 0) {
+            updatedLoan.arrearsBalance = (Number(l.arrearsBalance) || 0) + (emiNum - deductedForThisLoan);
+          }
+
+          let logText = "";
+          if (isRepaid) {
+            logText = `🎉 Final EMI deducted for ${emp.name}'s ${l.type}. Loan Fully Repaid!`;
+          } else if (deductedForThisLoan === 0) {
+            logText = `⚠️ Loan EMI Skipped for ${emp.name}'s ${l.type}: Net earnings insufficient (Rs.0 collected of nominal Rs.${fmt(emiNum)}). Tenure frozen at ${nextMonths} mo (Bal: Rs.${fmt(nextBal)}).`;
+          } else {
+            logText = `Loan EMI deducted for ${emp.name} (Rs.${fmt(deductedForThisLoan)}${deductedForThisLoan < emiNum ? ` of nominal Rs.${fmt(emiNum)}` : ""}) · ${nextMonths} mo remaining (Bal: Rs.${fmt(nextBal)})`;
+          }
+
+          steps.push({
+            node: "loans",
+            op: "UPDATE",
+            edge: ["payroll", "loans"],
+            text: logText,
+            row: updatedLoan
+          });
+        });
+      }
 
       if (empAllowances.length > 0) {
         steps.push({ node: "special_allowances", op: "SELECT", edge: ["payroll", "special_allowances"], text: `Applying special allowances for ${emp.name}` });
         empAllowances.forEach(sa => {
-          steps.push({ node: "special_allowances", op: "UPDATE", edge: ["special_allowances", "payroll"], text: `Marking ${sa.type} as Disbursed`, row: { ...sa, status: "Disbursed" } });
+          steps.push({ node: "special_allowances", op: "UPDATE", edge: ["special_allowances", "payroll"], text: `Marking ${sa.type} as Disbursed (${targetMonth})`, row: { ...sa, status: "Disbursed", disbursedMonth: targetMonth } });
+        });
+      }
+
+      if (awardBonus > 0 && empAwards.length > 0) {
+        steps.push({ node: "awards", op: "SELECT", edge: ["payroll", "awards"], text: `Applying award bonuses for ${emp.name}` });
+        empAwards.forEach(a => {
+          steps.push({ node: "awards", op: "UPDATE", edge: ["awards", "payroll"], text: `Marking ${a.category} reward as Disbursed (${targetMonth})`, row: { ...a, status: "Disbursed", bonusDisbursed: true, disbursedMonth: targetMonth } });
         });
       }
 
       if (perfBonus > 0 && latestPerf) {
         steps.push({ node: "performance", op: "SELECT", edge: ["payroll", "performance"], text: `Applying performance bonus for ${emp.name}` });
-        steps.push({ node: "performance", op: "UPDATE", edge: ["performance", "payroll"], text: `Marking ${latestPerf.cycle} bonus as Disbursed`, row: { ...latestPerf, bonusPaid: true } });
+        steps.push({ node: "performance", op: "UPDATE", edge: ["performance", "payroll"], text: `Marking ${latestPerf.cycle} bonus as Disbursed (${targetMonth})`, row: { ...latestPerf, bonusPaid: true, disbursedMonth: targetMonth } });
       }
 
       const allowLabel = totalAllowances > 0 ? ` (+Rs.${fmt(totalAllowances)} allow)` : "";
-      const textMsg = `Payslip — ${emp.name} | ${presentDays} Days @ Rs.${fmt(dailyRate)} | Gross Rs.${fmt(gross)}${allowLabel}${perfLabel} | PF Rs.${fmt(pf)} | TDS Rs.${fmt(tds)} | Net Rs.${fmt(net)}`;
+      const daysLabel = presentDays > monthDays ? `${billableDays} Days (Capped at ${monthDays}d/mo max)` : `${billableDays} Days`;
+      const textMsg = `Payslip (${targetMonth}) — ${emp.name} | ${daysLabel} @ Rs.${fmt(dailyRate)} | Gross Rs.${fmt(gross)}${allowLabel}${perfLabel}${awardLabel} | PF Rs.${fmt(pf)} | TDS Rs.${fmt(tds)}${emiLabel} | Net Rs.${fmt(net)}`;
 
-      const currentMonth = new Date().toLocaleString('en-US', { month: 'short', year: 'numeric' });
+      const existingPayslip = (db.payroll || []).find(r => r.emp === emp.name && r.month === targetMonth);
+      const prId = existingPayslip ? existingPayslip.id : nextId("PR");
+
+      const prRow = { id: prId, emp: emp.name, month: targetMonth, daysWorked: `${billableDays}/${monthDays} days`, gross: `Rs.${fmt(gross)}`, pf: `Rs.${fmt(pf)}`, net: `Rs.${fmt(net)}`, status: "Processed" };
+      if (loanEmiSum > 0) prRow.loanEmi = `Rs.${fmt(actualEmiDeducted)}`;
+      if (emiShortfall > 0) prRow.loanArrears = `Rs.${fmt(emiShortfall)}`;
+
       steps.push({
-        node: "payroll", op: "INSERT", edge: ["payroll", "emp_docs"],
-        text: textMsg,
-        row: { id: nextId("PR"), emp: emp.name, month: currentMonth, gross: `Rs.${fmt(gross)}`, pf: `Rs.${fmt(pf)}`, net: `Rs.${fmt(net)}`, status: "Processed" },
+        node: "payroll", op: existingPayslip ? "UPDATE" : "INSERT", edge: ["payroll", "emp_docs"],
+        text: (existingPayslip ? "🔄 Updated " : "") + textMsg,
+        row: prRow,
       });
     });
     execute(steps);
@@ -630,36 +1749,229 @@ export default function ModuleSimulation() {
   function actionAddAllowance() {
     const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
     if (!activeEmps.length) { pushLog("WARN", "special_allowances", "No active employees to add allowance for."); return; }
-    setModal({ type: "allowance", empId: activeEmps[0].id, allowanceType: "LTA (Leave Travel Allowance)", amount: 5000 });
+    setModal({
+      type: "allowance",
+      empId: activeEmps[0].id,
+      allowanceType: "LTA (Leave Travel Allowance)",
+      amount: 5000,
+      fiscalYear: 2026
+    });
   }
   function confirmAddAllowance() {
+    if (running || !checkNetworkOrWarn()) return;
     const emp = db.emp_docs.find(e => e.id === modal.empId); if (!emp) return;
+    const amt = Math.max(500, Number(modal.amount) || 5000);
     const fmt = (n) => Number(n).toLocaleString("en-IN");
-    const row = { id: nextId("SA"), emp: emp.name, type: modal.allowanceType, amount: `Rs.${fmt(modal.amount)}`, period: "FY2026", status: "Approved" };
+    const fy = Number(modal.fiscalYear) || 2026;
+    const period = `FY${fy}–${String(fy + 1).slice(2)}`;
+    const row = { id: nextId("SA"), emp: emp.name, type: modal.allowanceType, amount: `Rs.${fmt(amt)}`, period, fiscalYear: fy, status: "Approved" };
     setModal(null);
     execute([
-      { node: "emp_docs", op: "SELECT", text: `Verifying eligibility for ${emp.name}` },
-      { node: "payroll", op: "SELECT", edge: ["special_allowances", "payroll"], text: `Reading payroll base for ${emp.name}` },
-      { node: "special_allowances", op: "INSERT", edge: ["special_allowances", "emp_docs"], text: `Adding ${modal.allowanceType} of Rs.${fmt(modal.amount)} for ${emp.name}`, row },
+      { node: "emp_docs", op: "SELECT", text: `Verifying allowance eligibility & budget allocation for ${emp.name}` },
+      { node: "payroll", op: "SELECT", edge: ["special_allowances", "payroll"], text: `Reading ${period} payroll base and statutory caps for ${emp.name}` },
+      { node: "special_allowances", op: "INSERT", edge: ["special_allowances", "emp_docs"], text: `💰 Special Allowance Authorized: ${modal.allowanceType} of Rs.${fmt(amt)} (${period}) for ${emp.name} (Annual Disbursement)`, row, alert: true },
+      { node: "special_allowances", op: "SELECT", text: `🔔 Notification sent to ${emp.name}: Your ${modal.allowanceType} of Rs.${fmt(amt)} for ${period} has been authorized and queued for payroll disbursement.` }
     ]);
   }
+
+  const PROFILE_FIELD_CONFIG = {
+    "Residential Address": {
+      label: "Residential Address",
+      placeholder: "e.g. Flat 4B, Emerald Heights, 5th Cross, Indiranagar, Bangalore - 560038",
+      defaultVal: "Flat 4B, Emerald Heights, 5th Cross, Indiranagar, Bangalore - 560038",
+      empKey: "address",
+      isTextarea: true,
+      hint: "Permanent / Current residential address for official communication & statutory records",
+      proofHint: "📎 Rental Agreement / Utility Bill proof self-declared"
+    },
+    "Personal Phone": {
+      label: "Personal Mobile Number",
+      placeholder: "e.g. +91 98765 43210",
+      defaultVal: "+91 98765 43210",
+      empKey: "phone",
+      isTextarea: false,
+      hint: "10-digit primary mobile number for corporate 2FA and emergency SMS alerts",
+      proofHint: "📎 Telecom subscriber verification proof"
+    },
+    "Emergency Contact": {
+      label: "Emergency Contact Person",
+      placeholder: "e.g. Priya Sharma (Spouse) - +91 98111 22233",
+      defaultVal: "Priya Sharma (Spouse) - +91 98111 22233",
+      empKey: "emergency_contact",
+      isTextarea: false,
+      hint: "Primary kin contact name, relationship, and reachable emergency phone number",
+      proofHint: "📎 Kin relationship self-declaration"
+    },
+    "Personal Email": {
+      label: "Personal Email Address",
+      placeholder: "e.g. employee.personal@gmail.com",
+      defaultVal: "employee.personal@gmail.com",
+      empKey: "personal_email",
+      isTextarea: false,
+      hint: "Secondary personal email for Form 16, tax slips, and offboarding communications",
+      proofHint: "📎 Email OTP verification completed"
+    },
+    "Bank Account & IFSC": {
+      label: "Bank Account & IFSC (Salary Credit)",
+      placeholder: "e.g. HDFC Bank · A/C 50100456789012 · IFSC HDFC0001234",
+      defaultVal: "HDFC Bank · A/C 50100456789012 · IFSC HDFC0001234",
+      empKey: "bank_details",
+      isTextarea: false,
+      hint: "Requires cancelled cheque / bank statement for HR payroll disbursement verification",
+      proofHint: "📎 Cancelled Cheque / Bank Passbook attached"
+    },
+    "Blood Group": {
+      label: "Blood Group",
+      placeholder: "e.g. O+ Positive",
+      defaultVal: "O+ Positive",
+      empKey: "blood_group",
+      isTextarea: false,
+      hint: "Employee medical record and corporate emergency health registry",
+      proofHint: "📎 Diagnostic blood report self-declaration"
+    }
+  };
 
   // ── ESS Request ────────────────────────────────────────────────────────────
   function actionESS() {
     const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
     if (!activeEmps.length) { pushLog("WARN", "ess_requests", "No active employees to make ESS requests."); return; }
-    setModal({ type: "ess", empId: activeEmps[0].id, req: "Payslip Download" });
+    setModal({
+      type: "ess",
+      empId: activeEmps[0].id,
+      req: "Payslip Download",
+      payslipMonth: "Oct 2026",
+      corrDate: getLocalDateStr(),
+      corrSession: "Morning Punch IN",
+      corrReason: "Biometric Hardware Error",
+      claimCategory: "Local Conveyance / Travel",
+      claimAmount: 1200,
+      ticketCategory: "IT Hardware & Equipment",
+      ticketPriority: "High",
+      ticketSubject: "Laptop Screen Flickering & Battery Glitch",
+      ticketDescription: "Display blanks out intermittently during video calls and battery drains rapidly. Requesting hardware diagnostic inspection.",
+      profileField: "Residential Address",
+      profileValue: "Flat 4B, Emerald Heights, 5th Cross, Indiranagar, Bangalore - 560038",
+      docType: "Bonafide Certificate",
+      customDocTitle: "",
+      docPurpose: ""
+    });
   }
+
   function confirmESS() {
     const emp = db.emp_docs.find(e => e.id === modal.empId); if (!emp) return;
-    const row = { id: nextId("ESS"), emp: emp.name, request: modal.req, channel: "ESS Portal", status: "Completed" };
+
+    let detailStr = "";
+    let targetNode = "emp_docs";
+    let stepLog = "";
+    let status = "Completed";
+
+    if (modal.req === "Payslip Download") {
+      const pMonth = modal.payslipMonth || "Oct 2026";
+      const pSlip = (db.payroll || []).find(p => p.emp === emp.name && p.month === pMonth);
+      detailStr = pSlip ? `Month: ${pMonth} | Gross: ${pSlip.gross} | Net: ${pSlip.net}` : `Month: ${pMonth} | Verified Digital Payslip`;
+      targetNode = "payroll";
+      stepLog = `Fetching encrypted ${pMonth} payslip statement for ${emp.name}`;
+    } else if (modal.req === "Leave Balance Check") {
+      const a = getLeaveBalance(emp.name, "Annual Leave");
+      const c = getLeaveBalance(emp.name, "Casual Leave");
+      const s = getLeaveBalance(emp.name, "Sick Leave");
+      detailStr = `Annual: ${a.toFixed(1)}d | Casual: ${c.toFixed(1)}d | Sick: ${s.toFixed(1)}d`;
+      targetNode = "attendance_leave";
+      stepLog = `Querying live 3-tier leave ledger balances for ${emp.name}`;
+    } else if (modal.req === "Attendance Correction") {
+      const corrDate = modal.corrDate || getLocalDateStr();
+      const corrSession = modal.corrSession || "Morning Punch IN";
+      const corrReason = modal.corrReason || "Biometric Hardware Error";
+      detailStr = `${corrDate} (${corrSession}) — ${corrReason}`;
+      targetNode = "attendance_leave";
+      status = "Pending HR Approval";
+      stepLog = `Filing attendance punch regularization on ${corrDate} (${corrSession}) for ${emp.name}`;
+    } else if (modal.req === "Reimbursement Claim") {
+      const amt = Number(modal.claimAmount) || 1200;
+      const cat = modal.claimCategory || "Local Conveyance / Travel";
+      detailStr = `${cat} — Rs.${amt.toLocaleString("en-IN")}`;
+      targetNode = "special_allowances";
+      status = "Pending HR Approval";
+      stepLog = `Filing expense reimbursement claim (Rs.${amt.toLocaleString("en-IN")}) for ${emp.name}`;
+    } else if (modal.req === "HR & IT Helpdesk" || modal.req === "IT Declaration Submission") {
+      const cat = modal.ticketCategory || "IT Hardware & Equipment";
+      const prio = modal.ticketPriority || "High";
+      const sub = (modal.ticketSubject || "").trim() || "Hardware Support";
+      const desc = (modal.ticketDescription || "").trim();
+      detailStr = `[${prio}] ${cat}: ${sub}`;
+      targetNode = (cat.includes("IT") || cat.includes("Hardware") || cat.includes("Laptop") || cat.includes("Equipment")) ? "assets" : (cat.includes("Payroll") || cat.includes("Salary") ? "payroll" : "emp_docs");
+      status = "Pending HR/IT Resolution";
+      stepLog = `Filing internal support ticket [${prio}] "${sub}" for ${emp.name}`;
+    } else if (modal.req === "Profile Update") {
+      const pField = modal.profileField || "Residential Address";
+      const config = PROFILE_FIELD_CONFIG[pField] || PROFILE_FIELD_CONFIG["Residential Address"];
+      const pVal = (modal.profileValue !== undefined && modal.profileValue !== null && String(modal.profileValue).trim() !== "")
+        ? String(modal.profileValue).trim()
+        : config.defaultVal;
+      detailStr = `${pField}: ${pVal}`;
+      targetNode = "emp_docs";
+      status = "Pending HR Approval";
+      stepLog = `Submitting master profile modification (${pField}) for ${emp.name}`;
+    } else if (modal.req === "Document Request") {
+      const isCustom = modal.docType === "Other (Custom Document / Letter)...";
+      const docName = isCustom ? (modal.customDocTitle?.trim() || "Custom HR Document") : (modal.docType || "Bonafide Certificate");
+      const purposeStr = modal.docPurpose?.trim() ? ` [Purpose: ${modal.docPurpose.trim()}]` : "";
+      detailStr = `${docName}${purposeStr}`;
+      targetNode = "emp_docs";
+      status = "Pending HR Approval";
+      stepLog = `Requesting official signed HR document "${docName}" for ${emp.name}`;
+    }
+
+    const row = {
+      id: nextId("ESS"),
+      emp: emp.name,
+      request: modal.req === "IT Declaration Submission" ? "HR & IT Helpdesk" : modal.req,
+      details: detailStr,
+      ...(modal.req === "Reimbursement Claim" && {
+        claimCategory: modal.claimCategory || "Local Conveyance / Travel",
+        claimAmount: Number(modal.claimAmount) || 1200,
+      }),
+      ...(modal.req === "Attendance Correction" && {
+        corrDate: modal.corrDate || getLocalDateStr(),
+        corrSession: modal.corrSession || "Morning Punch IN",
+        corrReason: modal.corrReason || "Biometric Hardware Error",
+      }),
+      ...((modal.req === "HR & IT Helpdesk" || modal.req === "IT Declaration Submission") && {
+        ticketCategory: modal.ticketCategory || "IT Hardware & Equipment",
+        ticketPriority: modal.ticketPriority || "High",
+        ticketSubject: (modal.ticketSubject || "").trim() || "Hardware Diagnostic",
+        ticketDescription: (modal.ticketDescription || "").trim() || "Technician inspection requested",
+      }),
+      ...(modal.req === "Profile Update" && {
+        profileField: modal.profileField || "Residential Address",
+        profileValue: (modal.profileValue !== undefined && modal.profileValue !== null && String(modal.profileValue).trim() !== "")
+          ? String(modal.profileValue).trim()
+          : (PROFILE_FIELD_CONFIG[modal.profileField || "Residential Address"]?.defaultVal || "Updated"),
+      }),
+      ...(modal.req === "Document Request" && {
+        docType: modal.docType === "Other (Custom Document / Letter)..."
+          ? (modal.customDocTitle?.trim() || "Custom HR Document")
+          : (modal.docType || "Bonafide Certificate"),
+        ...(modal.docPurpose?.trim() && { docPurpose: modal.docPurpose.trim() }),
+      }),
+      channel: "ESS Portal",
+      status
+    };
+
+
     setModal(null);
+    const isPending = status.includes("Pending");
+    const logText = isPending
+      ? `ESS Request Submitted: "${modal.req}" for ${emp.name} routed to Operations & Approvals Drawer`
+      : `ESS Processed: "${modal.req}" (${detailStr}) for ${emp.name}`;
+
     execute([
-      { node: "emp_docs", op: "SELECT", text: `Authenticating portal session — ${emp.name}` },
-      { node: "attendance_leave", op: "SELECT", edge: ["ess", "attendance_leave"], text: `Fetching leave & attendance for ${emp.name}` },
-      { node: "payroll", op: "SELECT", edge: ["ess", "payroll"], text: `Fetching payslip data for ${emp.name}` },
-      { node: "performance", op: "SELECT", edge: ["ess", "performance"], text: `Fetching appraisal data for ${emp.name}` },
-      { node: "ess", op: "INSERT", edge: ["ess", "emp_docs"], text: `Processing ESS: "${modal.req}" for ${emp.name}`, row },
+      { node: "emp_docs", op: "SELECT", text: `Authenticating portal SSO session — ${emp.name}` },
+      { node: targetNode, op: "SELECT", edge: ["ess", targetNode], text: stepLog },
+      { node: "ess", op: "INSERT", edge: ["ess", "emp_docs"], text: logText, row },
+      ...(isPending ? [
+        { node: "ess", op: "SELECT", text: `🔔 Notification sent to HR & IT Support: New ${modal.req} from ${emp.name} awaits resolution in Approvals Drawer.` }
+      ] : [])
     ]);
   }
 
@@ -700,35 +2012,106 @@ export default function ModuleSimulation() {
     execute(steps);
   }
 
+  // ── Internal Talent Mobility (Unified Promotion & Department Transfer) ──────
+  function actionMobility(prefillSubTab = "promote") {
+    const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
+    if (!activeEmps.length) { pushLog("WARN", "emp_docs", "No active employees available for mobility."); return; }
+    const firstEmp = activeEmps[0];
+    const curRank = DESIG_POOL.indexOf(firstEmp.designation);
+    const nextDesig = curRank >= 0 && curRank < DESIG_POOL.length - 1 ? DESIG_POOL[curRank + 1] : DESIG_POOL[0];
+    const targetDept = DEPT_POOL.find(d => d !== firstEmp.dept) || DEPT_POOL[0];
+
+    setModal({
+      type: "mobility",
+      subTab: prefillSubTab, // "promote" or "transfer"
+      empId: firstEmp.id,
+      newDesig: nextDesig,
+      newDept: targetDept,
+      transferReason: "Project Reallocation",
+      transferEffectiveDate: getLocalDateStr()
+    });
+  }
+
   // ── Transfer Employee ────────────────────────────────────────────────────────
   function actionTransfer() {
-    const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
-    if (!activeEmps.length) { pushLog("WARN", "emp_docs", "No active employees to transfer."); return; }
-    setModal({ type: "transfer", empId: activeEmps[0].id, newDept: DEPT_POOL[0] });
+    actionMobility("transfer");
   }
   function confirmTransfer() {
     const emp = db.emp_docs.find(e => e.id === modal.empId); if (!emp) return;
     const oldDept = emp.dept;
+    const newDept = modal.newDept;
 
     // Rule: Target department must be different from current department
-    if (modal.newDept === oldDept) {
+    if (newDept === oldDept) {
       pushLog("WARN", "emp_docs", `Transfer rejected — ${emp.name} is already in the ${oldDept} department.`);
       setModal(null);
       return;
     }
 
+    const transferReason = modal.transferReason || "Project Reallocation";
+    const effectiveDate = modal.transferEffectiveDate || getLocalDateStr();
+    const updatedEmp = {
+      id: emp.id,
+      dept: newDept,
+      previous_dept: oldDept,
+      transfer_reason: transferReason,
+      transfer_date: effectiveDate
+    };
+
+    const empAssets = (db.assets || []).filter(a =>
+      a.emp?.trim().toLowerCase() === emp.name?.trim().toLowerCase() &&
+      (!a.status?.includes("Returned") && !a.status?.includes("Recovered"))
+    );
+
     setModal(null);
-    execute([
-      { node: "emp_docs", op: "SELECT", edge: ["emp_docs", "payroll"], text: `Verifying transfer eligibility for ${emp.name}` },
-      { node: "emp_docs", op: "UPDATE", text: `🔄 Transferring ${emp.name} from ${oldDept} to ${modal.newDept}`, row: { id: emp.id, dept: modal.newDept } },
-    ]);
+
+    const steps = [
+      { node: "emp_docs", op: "SELECT", text: `Verifying transfer eligibility & career record for ${emp.name} (${oldDept})` },
+      {
+        node: "emp_docs",
+        op: "UPDATE",
+        edge: ["emp_docs", "payroll"],
+        text: `🔄 Department Transfer Approved: ${emp.name} moved from ${oldDept} to ${newDept} [Reason: ${transferReason}]`,
+        row: updatedEmp
+      },
+      {
+        node: "payroll",
+        op: "SELECT",
+        edge: ["payroll", "emp_docs"],
+        text: `💼 Payroll Cost Center Shift: ${emp.name}'s salary budget transferred from ${oldDept} to ${newDept} (Daily wage Rs.${Number(emp.dailyRate || 1000).toLocaleString("en-IN")}/d preserved)`
+      },
+      {
+        node: "attendance_leave",
+        op: "SELECT",
+        edge: ["attendance_leave", "emp_docs"],
+        text: `⏱️ Shift Schedule Reassigned: Migrated ${emp.name}'s attendance roster to ${newDept} operational calendar`
+      }
+    ];
+
+    if (empAssets.length > 0) {
+      empAssets.forEach(a => {
+        steps.push({
+          node: "assets",
+          op: "UPDATE",
+          edge: ["assets", "emp_docs"],
+          text: `📦 Hardware Cost Center Tagged: ${a.asset} (${a.code || a.id}) updated to ${newDept} custodian pool`,
+          row: { ...a, department: newDept }
+        });
+      });
+    }
+
+    steps.push({
+      node: "emp_docs",
+      op: "SELECT",
+      text: `🔔 Handoff Notification: Digital clearance and onboarding dossier dispatched to ${oldDept} & ${newDept} leadership`
+    });
+
+    execute(steps);
   }
 
   // ── Promote Employee ─────────────────────────────────────────────────────────
   function actionPromote() {
-    const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
-    if (!activeEmps.length) { pushLog("WARN", "emp_docs", "No active employees to promote."); return; }
-    setModal({ type: "promote", empId: activeEmps[0].id, newDesig: DESIG_POOL[0] });
+    actionMobility("promote");
   }
   function confirmPromote() {
     const emp = db.emp_docs.find(e => e.id === modal.empId); if (!emp) return;
@@ -743,73 +2126,301 @@ export default function ModuleSimulation() {
       return;
     }
 
-    // Rule: Block promotion if latest performance rating is poor
+    // Rule: Require at least one completed performance appraisal cycle on file (Item 2.3)
     const perfRecords = db.performance.filter(r => r.emp === emp.name);
-    if (perfRecords.length > 0) {
-      const latestRating = perfRecords[perfRecords.length - 1].rating;
-      if (latestRating === "Needs Improvement" || latestRating === "Unsatisfactory") {
-        pushLog("WARN", "emp_docs", `Promotion blocked for ${emp.name} — latest appraisal rating is "${latestRating}". Performance improvement required before promotion.`);
-        setModal(null);
-        return;
-      }
+    if (perfRecords.length === 0) {
+      pushLog("WARN", "emp_docs", `Promotion blocked for ${emp.name} — No verified performance appraisal on file. Corporate policy requires at least 1 completed evaluation cycle before promotion eligibility.`);
+      setModal(null);
+      return;
     }
+
+    const latestRating = perfRecords[perfRecords.length - 1].rating;
+    if (latestRating === "Needs Improvement" || latestRating === "Unsatisfactory") {
+      pushLog("WARN", "emp_docs", `Promotion blocked for ${emp.name} — latest appraisal rating is "${latestRating}". Performance improvement required before promotion.`);
+      setModal(null);
+      return;
+    }
+
+    // S.4: Calculate Compensation Delta & Wage Bump
+    const oldRate = DESIGNATION_RATES[oldDesig] || 1000;
+    const newRate = DESIGNATION_RATES[modal.newDesig] || 1000;
+    const wageDelta = newRate - oldRate;
+    const wagePct = oldRate > 0 ? Math.round((wageDelta / oldRate) * 100) : 0;
+    const fmt = (n) => Number(n).toLocaleString("en-IN");
 
     setModal(null);
     execute([
-      { node: "performance", op: "SELECT", edge: ["emp_docs", "performance"], text: `Reviewing performance history for ${emp.name}` },
-      { node: "emp_docs", op: "UPDATE", text: `⭐ Promoted ${emp.name} from ${oldDesig} to ${modal.newDesig}!`, row: { id: emp.id, designation: modal.newDesig } },
+      { node: "performance", op: "SELECT", edge: ["emp_docs", "performance"], text: `Reviewing performance history for ${emp.name} (Verified Appraisal Rating: ${latestRating})` },
+      {
+        node: "emp_docs",
+        op: "UPDATE",
+        edge: ["emp_docs", "payroll"],
+        text: `⭐ Promoted ${emp.name} from ${oldDesig} (Rs.${fmt(oldRate)}/d) to ${modal.newDesig} (Rs.${fmt(newRate)}/d)! Wage revised (+${wagePct}%, +Rs.${fmt(wageDelta)}/day bump)`,
+        row: { id: emp.id, designation: modal.newDesig, dailyRate: newRate },
+        alert: true
+      },
+      {
+        node: "payroll",
+        op: "SELECT",
+        edge: ["payroll", "emp_docs"],
+        text: `📈 Payroll Grade Scale Adjusted: ${emp.name}'s standard monthly base earnings scale updated to Rs.${fmt(newRate * 30)}/mo (+Rs.${fmt(wageDelta * 30)}/mo increment)`
+      }
     ]);
   }
 
   // ── Offboard Employee ────────────────────────────────────────────────────────
   function actionOffboard() {
+    if (running || !checkNetworkOrWarn()) return;
     const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
     if (!activeEmps.length) { pushLog("WARN", "emp_docs", "No active employees to offboard."); return; }
-    setModal({ type: "offboard", empId: activeEmps[0].id, reason: "Resignation", exitDate: new Date().toISOString().slice(0, 10) });
+    const todayStr = getLocalDateStr();
+    const targetEmp = activeEmps[0];
+    const isAlreadyOnNotice = targetEmp.status?.includes("Notice Period");
+    const exitDate = isAlreadyOnNotice && targetEmp.exit_date ? targetEmp.exit_date : todayStr;
+    const wdInfo = getWorkingDaysInMonthUpToDate(exitDate);
+
+    const ALL_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const exitD = new Date(exitDate);
+    const exitMonthStr = `${ALL_MONTHS[exitD.getMonth()]} ${exitD.getFullYear()}`;
+    const alreadyPaid = (db.payroll || []).some(p => p.emp === targetEmp.name && p.month === exitMonthStr && p.payrollMode !== "Full & Final Settlement");
+    const defaultWorkingDays = alreadyPaid ? 0 : wdInfo.workingDays;
+
+    setModal({
+      type: "offboard",
+      empId: targetEmp.id,
+      reason: "Resignation",
+      exitDate,
+      workingDays: defaultWorkingDays,
+      separationMode: isAlreadyOnNotice ? "final_clearance" : (exitDate > todayStr ? "notice" : "final_clearance")
+    });
   }
-  function confirmOffboard() {
+  async function confirmOffboard() {
+    if (running || !checkNetworkOrWarn()) return;
     const emp = db.emp_docs.find(e => e.id === modal.empId); if (!emp) return;
+    const exitReason = modal.reason;
+    const exitDate = modal.exitDate;
+    const separationMode = modal.separationMode || "final_clearance";
     setModal(null);
 
+    // ── Mode A: Notice Period Scheduled (Employee remains active for Oct/Nov payroll) ──
+    if (separationMode === "notice") {
+      const steps = [
+        {
+          node: "emp_docs",
+          op: "UPDATE",
+          text: `📋 Resignation Accepted: ${emp.name} is now Serving Notice Period until ${exitDate} (${exitReason}). Access credentials and hardware assets remain active for intervening monthly payroll.`,
+          row: { ...emp, status: `Serving Notice Period (Exit: ${exitDate})`, exit_date: exitDate, exitReason: exitReason },
+          alert: true
+        },
+        {
+          node: "emp_docs",
+          op: "SELECT",
+          text: `🔔 Notification sent to ${emp.name}: Separation notice acknowledged (${exitReason}). Scheduled Last Working Day: ${exitDate}. Access credentials, company assets, and monthly payroll remain active throughout notice period.`
+        }
+      ];
+      await execute(steps);
+      return;
+    }
+
+    // ── Mode B: Final Day Clearance & F&F Settlement ──
+    const wdInfo = getWorkingDaysInMonthUpToDate(exitDate);
+    const workedDays = (typeof modal.workingDays === "number" && !isNaN(modal.workingDays) && modal.workingDays >= 0)
+      ? modal.workingDays
+      : wdInfo.workingDays;
+
     const steps = [];
-    steps.push({ node: "emp_docs", op: "SELECT", text: `Initiating offboarding sequence for ${emp.name}`, alert: true });
-    
+    steps.push({ node: "emp_docs", op: "SELECT", text: `Initiating final offboarding clearance for ${emp.name}`, alert: true });
+
     steps.push({ node: "attendance_leave", op: "SELECT", edge: ["attendance_leave", "emp_docs"], text: `🔒 Access Revoked: Biometric profile locked for ${emp.name}`, alert: true });
 
-    const empAssets = db.assets.filter(a => a.emp === emp.name && a.status === "Allocated");
+    // Asset Return & Recovery upon Offboarding
+    const empAssets = (db.assets || []).filter(a =>
+      a.emp?.trim().toLowerCase() === emp.name?.trim().toLowerCase() &&
+      (!a.status?.includes("Returned") && !a.status?.includes("Recovered"))
+    );
     if (empAssets.length > 0) {
-      steps.push({ node: "assets", op: "SELECT", edge: ["assets", "emp_docs"], text: `Checking allocated assets for ${emp.name}...`, alert: true });
+      steps.push({ node: "assets", op: "SELECT", edge: ["assets", "emp_docs"], text: `Checking allocated company assets for offboarding ${emp.name}...`, alert: true });
       empAssets.forEach(a => {
-        steps.push({ node: "assets", op: "UPDATE", edge: ["assets", "emp_docs"], text: `📦 Recovered Asset: ${a.asset} (${a.code})`, row: { ...a, status: "Recovered" }, alert: true });
+        const returnedAsset = {
+          ...a,
+          status: `Returned (Offboarded - ${exitReason})`,
+          returnReason: `Offboarding (${exitReason})`,
+          returnedDate: exitDate || getLocalDateStr()
+        };
+        steps.push({
+          node: "assets",
+          op: "UPDATE",
+          edge: ["assets", "emp_docs"],
+          text: `📦 Asset Returned: ${a.asset} (${a.code || a.id}) returned by ${emp.name} upon offboarding (${exitReason})`,
+          row: returnedAsset,
+          alert: true
+        });
+      });
+      steps.push({
+        node: "assets",
+        op: "SELECT",
+        text: `🔔 Inventory Notification: ${empAssets.length} asset(s) returned to IT inventory pool. Hardware custodian record cleared for ${emp.name}.`
       });
     } else {
       steps.push({ node: "assets", op: "SELECT", edge: ["assets", "emp_docs"], text: `No active assets to recover for ${emp.name}.`, alert: true });
     }
 
-    const empLoans = db.loans.filter(l => l.emp === emp.name && (l.status === "Active" || l.status === "Under Review"));
-    if (empLoans.length > 0) {
-      steps.push({ node: "loans", op: "SELECT", edge: ["loans", "emp_docs"], text: `Checking outstanding loans for ${emp.name}...`, alert: true });
-      empLoans.forEach(l => {
-        steps.push({ node: "loans", op: "UPDATE", edge: ["loans", "emp_docs"], text: `💰 Loan Cleared: Deducted remaining balance for ${l.type}`, row: { ...l, status: "Cleared via F&F" }, alert: true });
+    // Cancel pending leaves for offboarded employee
+    const pendingEmpLeaves = (db.attendance_leave || []).filter(r => r.emp === emp.name && r.status === "Pending Approval");
+    if (pendingEmpLeaves.length > 0) {
+      pendingEmpLeaves.forEach(lv => {
+        steps.push({
+          node: "attendance_leave",
+          op: "UPDATE",
+          text: `❌ Cancelled pending ${lv.type} (${lv.dates}) for offboarded employee ${emp.name}`,
+          row: { ...lv, status: "Cancelled (Employee Offboarded)" },
+          alert: true
+        });
       });
     }
 
-    steps.push({ node: "payroll", op: "SELECT", edge: ["payroll", "emp_docs"], text: `Generating Full & Final (F&F) Settlement for ${emp.name}...`, alert: true });
-    
-    steps.push({ node: "emp_docs", op: "UPDATE", text: `🛑 Offboarded ${emp.name} (${modal.reason})`, row: { id: emp.id, status: `Inactive (${modal.reason})`, exit_date: modal.exitDate }, alert: true });
+    // Void pending ESS requests (claims, corrections, tickets, docs, profile updates)
+    const pendingEmpEss = (db.ess || []).filter(r => r.emp === emp.name && (r.status?.includes("Pending") || r.status?.includes("Open") || r.status?.includes("Escalated")));
+    if (pendingEmpEss.length > 0) {
+      pendingEmpEss.forEach(req => {
+        steps.push({
+          node: "ess",
+          op: "UPDATE",
+          text: `❌ Voided pending ESS request #${req.id} (${req.request}) for offboarded employee ${emp.name}`,
+          row: { ...req, status: "Voided (Employee Offboarded)" },
+          alert: true
+        });
+      });
+    }
 
-    execute(steps);
+    // ── Financial Full & Final Settlement Calculation ──
+    const dailyRate = emp.dailyRate || (emp.designation ? DESIGNATION_RATES[emp.designation] : 1000) || 1000;
+    const earnedWage = workedDays * dailyRate;
+    const alBalance = getLeaveBalance(emp.name, "Annual Leave");
+    const leaveEncashment = Math.max(0, Math.round(alBalance * dailyRate));
+    const grossSettlement = earnedWage + leaveEncashment;
+    const pf = Math.round(earnedWage * 0.12);
+    const tds = Math.round(earnedWage * 0.07);
+    const statutoryDeductions = pf + tds;
+    const netAvailableBeforeLoans = Math.max(0, grossSettlement - statutoryDeductions);
+
+    // Loan Recovery with Deficit Accounting (Bug 2 Fix)
+    const empLoans = db.loans.filter(l => l.emp === emp.name && (l.status.includes("Active") || l.status === "Under Review"));
+    let remainingLoanRecoveryBudget = netAvailableBeforeLoans;
+    let totalLoanBalance = 0;
+    let actualLoanRecovered = 0;
+
+    if (empLoans.length > 0) {
+      steps.push({ node: "loans", op: "SELECT", edge: ["loans", "emp_docs"], text: `Auditing outstanding loan obligations for ${emp.name} against net settlement capacity (Available: Rs.${netAvailableBeforeLoans.toLocaleString("en-IN")})...`, alert: true });
+      empLoans.forEach(l => {
+        const bal = l.remainingBalance !== undefined
+          ? Number(l.remainingBalance)
+          : (Number(String(l.amount || "0").replace(/[^\d]/g, '')) || 0);
+        totalLoanBalance += bal;
+        const recoverAmount = Math.min(bal, remainingLoanRecoveryBudget);
+        remainingLoanRecoveryBudget -= recoverAmount;
+        actualLoanRecovered += recoverAmount;
+        const unpaidDeficit = bal - recoverAmount;
+
+        if (unpaidDeficit <= 0) {
+          steps.push({
+            node: "loans",
+            op: "UPDATE",
+            edge: ["loans", "emp_docs"],
+            text: `💰 Loan Cleared: Full remaining balance (Rs.${bal.toLocaleString("en-IN")}) recovered via F&F settlement for ${l.type}`,
+            row: { ...l, status: "Cleared via F&F", remainingBalance: 0 },
+            alert: true
+          });
+        } else {
+          steps.push({
+            node: "loans",
+            op: "UPDATE",
+            edge: ["loans", "emp_docs"],
+            text: `⚠️ Loan Partially Recovered: Rs.${recoverAmount.toLocaleString("en-IN")} deducted via F&F. Unpaid deficit of Rs.${unpaidDeficit.toLocaleString("en-IN")} remains due from ${emp.name}`,
+            row: { ...l, status: `Deficit Post-F&F (Rs.${unpaidDeficit.toLocaleString("en-IN")} due)`, remainingBalance: unpaidDeficit },
+            alert: true
+          });
+        }
+      });
+    }
+
+    const loanDeficit = totalLoanBalance - actualLoanRecovered;
+    const netSettlement = remainingLoanRecoveryBudget;
+
+    const ffRecord = {
+      id: nextId("PR"),
+      emp: emp.name,
+      month: `F&F Settlement (${exitDate})`,
+      year: new Date(exitDate).getFullYear(),
+      payrollMode: "Full & Final Settlement",
+      daysWorked: `${workedDays} business days (${wdInfo.weekendDays} weekend days excluded)`,
+      baseGross: `Rs.${earnedWage.toLocaleString("en-IN")}`,
+      allowances: `Rs.${leaveEncashment.toLocaleString("en-IN")} (Leave Encashment)`,
+      bonus: "Rs.0",
+      gross: `Rs.${grossSettlement.toLocaleString("en-IN")}`,
+      pf: `Rs.${pf.toLocaleString("en-IN")}`,
+      tds: `Rs.${tds.toLocaleString("en-IN")}`,
+      loanDeduction: `Rs.${actualLoanRecovered.toLocaleString("en-IN")}${loanDeficit > 0 ? ` (Deficit Due: Rs.${loanDeficit.toLocaleString("en-IN")})` : ""}`,
+      net: `Rs.${netSettlement.toLocaleString("en-IN")}`,
+      status: loanDeficit > 0 ? `Settled (Loan Deficit Rs.${loanDeficit.toLocaleString("en-IN")})` : "Settled (F&F Closure)",
+      exitReason: exitReason,
+      exitDate: exitDate
+    };
+
+    steps.push({
+      node: "payroll",
+      op: "INSERT",
+      edge: ["payroll", "emp_docs"],
+      text: `💳 Generated Full & Final (F&F) Settlement for ${emp.name}: Net Payout Rs.${netSettlement.toLocaleString("en-IN")} (Earned: Rs.${earnedWage.toLocaleString("en-IN")} [${workedDays}d @ Rs.${dailyRate}/d] + Encashment: Rs.${leaveEncashment.toLocaleString("en-IN")} - Loan Recovered: Rs.${actualLoanRecovered.toLocaleString("en-IN")}${loanDeficit > 0 ? ` [Deficit Due: Rs.${loanDeficit.toLocaleString("en-IN")}]` : ""})`,
+      row: ffRecord,
+      alert: true
+    });
+
+    steps.push({
+      node: "emp_docs",
+      op: "UPDATE",
+      text: `🛑 Offboarded ${emp.name} (${exitReason}) — Master record archived`,
+      row: { ...emp, status: `Inactive (${exitReason})`, exit_date: exitDate, exitReason: exitReason },
+      alert: true
+    });
+
+    await execute(steps);
+
+    // Present the official Full & Final Settlement & No-Dues Statement
+    setFfStatement({
+      emp,
+      exitDate,
+      exitReason,
+      dailyRate,
+      exitDay: workedDays,
+      calendarDays: wdInfo.totalCalendarDays,
+      weekendDays: wdInfo.weekendDays,
+      earnedWage,
+      alBalance,
+      leaveEncashment,
+      empAssetsRecovered: empAssets.map(a => `${a.asset} (${a.code || a.id})`),
+      empLoansCleared: empLoans.map(l => `${l.type} (Rs.${Number(String(l.amount || "0").replace(/[^\d]/g, '')).toLocaleString("en-IN")})`),
+      totalLoanBalance,
+      actualLoanRecovered,
+      loanDeficit,
+      grossSettlement,
+      pf,
+      tds,
+      statutoryDeductions,
+      netSettlement,
+      refId: `FF-CLEAR-${Math.floor(100000 + Math.random() * 900000)}`,
+      generatedAt: new Date().toLocaleTimeString()
+    });
   }
 
   const ACTIONS = [
     { key: "add_emp", label: "Add Employee", run: actionAddEmployee, modId: "emp_docs", role: "HR" },
-    { key: "transfer", label: "Transfer Employee", run: actionTransfer, modId: "emp_docs", role: "HR" },
-    { key: "promote", label: "Promote Employee", run: actionPromote, modId: "emp_docs", role: "HR" },
+    { key: "mobility", label: "Internal Mobility", run: () => actionMobility("promote"), modId: "emp_docs", role: "HR" },
     { key: "offboard", label: "Offboard Employee", run: actionOffboard, modId: "emp_docs", role: "HR" },
     { key: "mark_att", label: "Mark Attendance", run: actionMarkAttendance, modId: "attendance_leave", role: "EMP" },
     { key: "apply_lv", label: "Apply Leave", run: actionApplyLeave, modId: "attendance_leave", role: "EMP" },
     { key: "log_perf", label: "Log Appraisal", run: actionLogAppraisal, modId: "performance", role: "HR" },
-    { key: "assign_ast", label: "Assign Asset", run: actionAssignAsset, modId: "assets", role: "HR" },
+    { key: "manage_ast", label: "Manage Assets", run: () => actionManageAssets("allocate"), modId: "assets", role: "HR" },
     { key: "loan_req", label: "Apply for Loan", run: actionApplyLoan, modId: "loans", role: "EMP" },
     { key: "nominate", label: "Nominate Award", run: actionNominateAward, modId: "awards", role: "HR" },
     { key: "payroll", label: "Run Payroll", run: actionRunPayroll, modId: "payroll", role: "HR" },
@@ -869,7 +2480,7 @@ export default function ModuleSimulation() {
     pushLog("SCHEMA", table, `Creating table "${table}" in database`);
 
     try {
-      await fetch('http://localhost:3000/api/modules', {
+      await fetch(`${API_BASE}/api/modules`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -908,7 +2519,7 @@ export default function ModuleSimulation() {
     const nextState = !mod.active;
     setModules((prev) => prev.map((m) => m.id === moduleId ? { ...m, active: nextState } : m));
 
-    fetch(`http://localhost:3000/api/modules/${moduleId}`, {
+    fetch(`${API_BASE}/api/modules/${moduleId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ active: nextState })
@@ -922,7 +2533,7 @@ export default function ModuleSimulation() {
 
   async function resetSim() {
     try {
-      await fetch('http://localhost:3000/api/reset', { method: 'DELETE' });
+      await fetch(`${API_BASE}/api/reset`, { method: 'DELETE' });
     } catch (err) {
       console.error("Failed to reset backend", err);
     }
@@ -1000,10 +2611,34 @@ export default function ModuleSimulation() {
           <div style={{ fontSize: 22, fontWeight: 700, color: "#F4F7FB" }}>Module Dependency &amp; Database Simulator</div>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          <button className="btn" onClick={() => setHrViewEnabled(!hrViewEnabled)}
+          <button className="btn" onClick={() => {
+            setHrViewEnabled(prev => !prev);
+            setInspectRecord(null);
+          }}
             style={{ display: "flex", alignItems: "center", gap: 6, borderColor: hrViewEnabled ? "rgba(125,211,252,0.4)" : "rgba(242,184,75,0.4)", color: hrViewEnabled ? "#7DD3FC" : "#F2B84B" }}>
             <Users size={14} /> ROLE: {hrViewEnabled ? "HR ADMIN" : "EMPLOYEE"}
           </button>
+          {hrViewEnabled && (
+            <button className="btn" onClick={() => setShowNotifications(true)}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                borderColor: pendingCount > 0 ? "rgba(242,184,75,0.8)" : "rgba(255,255,255,0.18)",
+                color: pendingCount > 0 ? "#F2D9A6" : "#7C93AA",
+                background: pendingCount > 0 ? "rgba(242,184,75,0.14)" : "transparent",
+                boxShadow: pendingCount > 0 ? "0 0 10px rgba(242,184,75,0.25)" : "none"
+              }}>
+              <Bell size={14} color={pendingCount > 0 ? "#F2B84B" : "#7C93AA"} />
+              <span>APPROVALS</span>
+              {pendingCount > 0 && (
+                <span style={{
+                  background: "#F2B84B", color: "#0A0F1A", fontSize: 10, fontWeight: 700,
+                  borderRadius: 10, padding: "1px 6px", lineHeight: "14px"
+                }}>
+                  {pendingCount}
+                </span>
+              )}
+            </button>
+          )}
           <button className="btn" onClick={() => setNetworkOn(!networkOn)}
             style={{ display: "flex", alignItems: "center", gap: 6, borderColor: networkOn ? "rgba(125,211,252,0.4)" : "rgba(242,107,107,0.4)", color: networkOn ? "#7DD3FC" : "#F26B6B" }}>
             <Power size={14} /> NETWORK: {networkOn ? "ON" : "DOWN"}
@@ -1070,16 +2705,43 @@ export default function ModuleSimulation() {
                 if (!s || !t) return null;
                 if (!modMap[e.dependency]?.active || !modMap[e.dependent]?.active) return null;
                 const active = hlEdges.has(`${e.dependent}|${e.dependency}`);
-                const midY = (s.y + t.y) / 2;
+
+                // Adaptive edge path routing for same-layer siblings vs cross-layer flows
+                let edgePath = "";
+                const isSameLayer = Math.abs(s.y - t.y) < 25;
+                if (isSameLayer) {
+                  if (s.x < t.x) {
+                    const startX = s.x + 72;
+                    const startY = s.y;
+                    const endX = t.x - 72;
+                    const endY = t.y;
+                    const dx = endX - startX;
+                    edgePath = `M ${startX} ${startY} C ${startX + dx * 0.35} ${startY - 25}, ${endX - dx * 0.35} ${endY - 25}, ${endX} ${endY}`;
+                  } else {
+                    const startX = s.x - 72;
+                    const startY = s.y;
+                    const endX = t.x + 72;
+                    const endY = t.y;
+                    const dx = startX - endX;
+                    edgePath = `M ${startX} ${startY} C ${startX - dx * 0.35} ${startY - 25}, ${endX + dx * 0.35} ${endY - 25}, ${endX} ${endY}`;
+                  }
+                } else if (s.y > t.y) {
+                  const midY = (s.y + t.y) / 2;
+                  edgePath = `M ${s.x} ${s.y - 26} C ${s.x} ${midY}, ${t.x} ${midY}, ${t.x} ${t.y + 26}`;
+                } else {
+                  const midY = (s.y + t.y) / 2;
+                  edgePath = `M ${s.x} ${s.y + 26} C ${s.x} ${midY}, ${t.x} ${midY}, ${t.x} ${t.y - 26}`;
+                }
+
                 return (
                   <g key={i}>
-                    <path d={`M ${s.x} ${s.y + 26} C ${s.x} ${midY}, ${t.x} ${midY}, ${t.x} ${t.y - 26}`}
+                    <path d={edgePath}
                       fill="none" stroke={active ? (hlAlert ? "#EF4444" : "#F2B84B") : "rgba(79,209,197,0.32)"}
                       strokeWidth={active ? 2.4 : 1.4}
                       markerEnd={active ? (hlAlert ? "url(#arrowAlert)" : "url(#arrowActive)") : "url(#arrow)"}
                     />
                     {active && (
-                      <path d={`M ${s.x} ${s.y + 26} C ${s.x} ${midY}, ${t.x} ${midY}, ${t.x} ${t.y - 26}`}
+                      <path d={edgePath}
                         fill="none" stroke="#FFFFFF" strokeWidth={2.5} className="flow-line" style={{ opacity: 0.8 }}
                       />
                     )}
@@ -1158,15 +2820,15 @@ export default function ModuleSimulation() {
           {/* Actions */}
           <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 4, background: "#0D1420", padding: 12 }}>
             <div className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.1em", marginBottom: 10 }}>MODULE ACTIONS</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 7 }}>
               {ACTIONS.map((a) => {
                 const mod = a.modId ? modMap[a.modId] : null;
                 const isDeactivated = mod && !mod.active;
                 return (
                   <button key={a.key} className="btn" disabled={running || isDeactivated}
-                    onClick={() => { 
+                    onClick={() => {
                       if (isDeactivated) { pushLog("WARN", "system", `Module deactivated. Operation blocked.`); return; }
-                      if (!networkOn) { pushLog("WARN", "system", "Network down — all modules offline."); return; } 
+                      if (!networkOn) { pushLog("WARN", "system", "Network down — all modules offline."); return; }
                       if (a.role === "HR" && !hrViewEnabled) {
                         pushLog("WARN", "system", `🔒 SECURITY ALERT: Access Denied. '${a.label}' requires HR Admin privileges.`);
                         setHlAlert(true);
@@ -1174,28 +2836,36 @@ export default function ModuleSimulation() {
                         setTimeout(() => { setHlAlert(false); setHlNodes(new Set()); }, 1500);
                         return;
                       }
-                      a.run(); 
+                      a.run();
                     }}
-                    style={isDeactivated ? { opacity: 0.4, cursor: "not-allowed" } : (a.role === "HR" && !hrViewEnabled ? { opacity: 0.5, borderStyle: "dashed" } : {})}>
+                    style={{
+                      padding: "8px 6px",
+                      fontSize: 11,
+                      textAlign: "center",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      ...(isDeactivated ? { opacity: 0.4, cursor: "not-allowed" } : (a.role === "HR" && !hrViewEnabled ? { opacity: 0.5, borderStyle: "dashed" } : {}))
+                    }}>
                     {a.label}
                   </button>
                 );
               })}
               {customActiveActions.map((m) => (
                 <button key={m.id} className="btn" disabled={running}
-                  onClick={() => { 
-                    if (!networkOn) { pushLog("WARN", "system", "Network down — all modules offline."); return; } 
+                  onClick={() => {
+                    if (!networkOn) { pushLog("WARN", "system", "Network down — all modules offline."); return; }
                     if (!hrViewEnabled) {
-                        pushLog("WARN", "system", `🔒 SECURITY ALERT: Access Denied. Custom module requires HR Admin privileges.`);
-                        setHlAlert(true);
-                        setHlNodes(new Set([m.id]));
-                        setTimeout(() => { setHlAlert(false); setHlNodes(new Set()); }, 1500);
-                        return;
+                      pushLog("WARN", "system", `🔒 SECURITY ALERT: Access Denied. Custom module requires HR Admin privileges.`);
+                      setHlAlert(true);
+                      setHlNodes(new Set([m.id]));
+                      setTimeout(() => { setHlAlert(false); setHlNodes(new Set()); }, 1500);
+                      return;
                     }
-                    actionCustom(m); 
+                    actionCustom(m);
                   }}
-                  style={{ borderColor: "rgba(242,107,107,0.35)", color: "#F2B8B8", opacity: !hrViewEnabled ? 0.5 : 1, borderStyle: !hrViewEnabled ? "dashed" : "solid" }}>
-                  Create {m.name} Record
+                  style={{ padding: "8px 6px", fontSize: 11, textAlign: "center", borderColor: "rgba(242,107,107,0.35)", color: "#F2B8B8", opacity: !hrViewEnabled ? 0.5 : 1, borderStyle: !hrViewEnabled ? "dashed" : "solid", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  + {m.name}
                 </button>
               ))}
             </div>
@@ -1221,54 +2891,728 @@ export default function ModuleSimulation() {
             )}
           </div>
 
-          {/* DB */}
-          <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 4, background: "#0D1420", padding: 12, maxHeight: 560, overflowY: "auto" }} className="scrollbar-thin">
-            <div className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.1em", marginBottom: 10 }}>DATABASE — LIVE STATE</div>
-            {modules.filter((m) => m.active).map((m) => {
-              const rows = db[m.id] || [];
-              const color = COLORS[m.id] || CUSTOM_PALETTE[m.name.length % CUSTOM_PALETTE.length];
-              let cols = rows.length ? Object.keys(rows[0]) : ["id"];
-              if (m.id === "emp_docs") cols = ["id", "name", "dept", "designation", "joined", "status"];
-              const isExpanded = expandedDb.has(m.id);
+          {/* DB SUMMARY & LIVE SYNC MONITOR */}
+          <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, background: "#0D1420", padding: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <Database size={14} color="#D8A6F2" />
+                <span className="mono" style={{ fontSize: 10.5, color: "#DCE6F2", fontWeight: 700, letterSpacing: "0.08em" }}>
+                  POSTGRESQL STORAGE
+                </span>
+              </div>
+              <span className="mono" style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 10, background: dbStatus === "synced" ? "rgba(140,233,154,0.12)" : "rgba(125,211,252,0.12)", color: dbStatus === "synced" ? "#8CE99A" : "#7DD3FC", border: dbStatus === "synced" ? "1px solid rgba(140,233,154,0.3)" : "1px solid rgba(125,211,252,0.3)", display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: dbStatus === "synced" ? "#8CE99A" : "#7DD3FC" }}></span>
+                hrms_records
+              </span>
+            </div>
 
-              return (
-                <div key={m.id} style={{ marginBottom: 14, border: hlNodes.has(m.id) ? "1px solid #F2B84B" : "1px solid rgba(255,255,255,0.06)", borderRadius: 3, overflow: "hidden" }}>
+            <div className="mono" style={{ fontSize: 10, color: "#7C93AA", marginBottom: 12, lineHeight: 1.4 }}>
+              All 9 modules and ESS self-service transactions commit live to PostgreSQL. Full audit trail, issue details, and approval stages are consolidated in the Master Explorer below.
+            </div>
+
+            {/* Active Table Chips with Row Counts */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 12 }}>
+              {modules.filter(m => m.active).map(m => {
+                const rows = db[m.id] || [];
+                const color = COLORS[m.id] || CUSTOM_PALETTE[m.name.length % CUSTOM_PALETTE.length];
+                const isFlashing = hlNodes.has(m.id);
+
+                return (
                   <div
-                    onClick={() => toggleDbExpanded(m.id)}
-                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 10px", background: "rgba(255,255,255,0.03)", cursor: "pointer" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      {isExpanded ? <ChevronDown size={14} color={color} /> : <ChevronRight size={14} color={color} />}
-                      <span className="mono" style={{ fontSize: 11, color, fontWeight: 600 }}>{m.table}</span>
+                    key={m.id}
+                    onClick={() => {
+                      if (!hrViewEnabled) setHrViewEnabled(true);
+                      setDbTab(m.id);
+                      setIsDbExplorerExpanded(true);
+                      setTimeout(() => {
+                        const el = document.getElementById("master-records-explorer");
+                        if (el) el.scrollIntoView({ behavior: "smooth" });
+                      }, 50);
+                    }}
+                    style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 8px",
+                      background: isFlashing ? "rgba(242,184,75,0.15)" : "rgba(255,255,255,0.02)",
+                      border: isFlashing ? "1px solid #F2B84B" : "1px solid rgba(255,255,255,0.06)",
+                      borderRadius: 4, cursor: "pointer", transition: "all 0.15s ease"
+                    }}
+                    className="mono"
+                    title={`View detailed ${m.name} records in explorer below`}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, overflow: "hidden" }}>
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 }}></span>
+                      <span style={{ fontSize: 10, color: isFlashing ? "#F2B84B" : "#DCE6F2", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {m.table}
+                      </span>
                     </div>
-                    <span className="mono" style={{ fontSize: 10, color: "#5C7891" }}>{rows.length} rows</span>
+                    <span style={{ fontSize: 9.5, color: color, fontWeight: 700, marginLeft: 4 }}>
+                      {rows.length}
+                    </span>
                   </div>
-                  {isExpanded && (
-                    rows.length === 0 ? (
-                      <div className="mono" style={{ fontSize: 11, color: "#3A5060", padding: "7px 10px", borderTop: "1px solid rgba(255,255,255,0.04)" }}>— empty —</div>
-                    ) : (
-                      <div style={{ borderTop: "1px solid rgba(255,255,255,0.04)", overflowX: "auto", maxHeight: "130px", overflowY: "auto" }} className="scrollbar-thin">
-                        <table className="mono" style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
-                          <tbody>
-                            {rows.map((r) => (
-                              <tr key={r.id} className={flash.has(`${m.id}:${r.id}`) ? "flash-row" : ""}>
-                                {cols.map((c) => (
-                                  <td key={c} style={{ padding: "4px 10px", color: "#9FB4C8", borderTop: "1px solid rgba(255,255,255,0.04)", whiteSpace: "nowrap", maxWidth: 128, overflow: "hidden", textOverflow: "ellipsis" }}>
-                                    {String(r[c] ?? "")}
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )
-                  )}
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
+
+            {/* Quick Action Button */}
+            <button
+              onClick={() => {
+                if (!hrViewEnabled) setHrViewEnabled(true);
+                setDbTab("ess");
+                setIsDbExplorerExpanded(true);
+                setTimeout(() => {
+                  const el = document.getElementById("master-records-explorer");
+                  if (el) el.scrollIntoView({ behavior: "smooth" });
+                }, 50);
+              }}
+              className="mono"
+              style={{
+                width: "100%", padding: "8px 12px", background: "rgba(216,166,242,0.12)",
+                border: "1px solid rgba(216,166,242,0.35)", borderRadius: 4, color: "#D8A6F2",
+                fontSize: 11, cursor: "pointer", fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 7
+              }}>
+              <Database size={13} /> Open Detailed Records Explorer Below ↓
+            </button>
           </div>
         </div>
       </div>
+
+      {/* ═══════════════════════════════════════════════════════════════════════ */}
+      {/* ── DOWN ON FRONTEND: MASTER DATABASE & ESS RECORDS EXPLORER (RBAC) ─── */}
+      {/* ═══════════════════════════════════════════════════════════════════════ */}
+      {hrViewEnabled ? (
+        <div id="master-records-explorer" style={{ marginTop: 22, border: "1px solid rgba(216,166,242,0.25)", borderRadius: 8, background: "#0A0F1A", padding: 18, boxShadow: "0 10px 30px rgba(0,0,0,0.4)" }}>
+          {/* Top Header Banner */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 16, borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: 14 }}>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                <div style={{ width: 34, height: 34, borderRadius: 6, background: "rgba(216,166,242,0.15)", border: "1px solid rgba(216,166,242,0.35)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Database size={18} color="#D8A6F2" />
+                </div>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#F4F7FB", letterSpacing: "0.02em", display: "flex", alignItems: "center", gap: 8 }}>
+                    Master Database &amp; Live Records Explorer
+                    <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "rgba(79,209,197,0.12)", color: "#4FD1C5", border: "1px solid rgba(79,209,197,0.3)", fontWeight: 600 }}>
+                      PostgreSQL Live Sync
+                    </span>
+                  </div>
+                  <div className="mono" style={{ fontSize: 11, color: "#7C93AA", marginTop: 2 }}>
+                    Direct mirror of persistent storage (<code style={{ color: "#D8A6F2" }}>hrms_db.hrms_records</code>) · Complete audit trail of all ESS submissions, HR approvals &amp; system updates
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div className="mono" style={{ fontSize: 10.5, color: "#5C7891", display: "flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.03)", padding: "5px 10px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.06)" }}>
+                <div style={{ width: 7, height: 7, borderRadius: "50%", background: dbStatus === "synced" ? "#8CE99A" : (dbStatus === "syncing" ? "#F2B84B" : "#4FD1C5"), boxShadow: dbStatus === "synced" ? "0 0 8px #8CE99A" : "none" }} />
+                {dbStatus === "synced" ? "PostgreSQL Synced" : (dbStatus === "syncing" ? "Syncing to Postgres..." : "Live Active Session")}
+              </div>
+
+              {pendingCount > 0 && (
+                <button className="btn" onClick={() => setShowNotifications(true)}
+                  style={{ fontSize: 11, padding: "5px 11px", borderColor: "rgba(242,184,75,0.4)", color: "#F2B84B", background: "rgba(242,184,75,0.1)", display: "flex", alignItems: "center", gap: 6, fontWeight: 600 }}>
+                  <Bell size={13} /> {pendingCount} Pending HR Action{pendingCount > 1 ? "s" : ""}
+                </button>
+              )}
+
+              {/* Collapse / Expand Toggle Button */}
+              <button
+                onClick={() => setIsDbExplorerExpanded(prev => !prev)}
+                className="mono"
+                style={{
+                  fontSize: 11, padding: "5px 12px", borderRadius: 4, cursor: "pointer",
+                  background: isDbExplorerExpanded ? "rgba(216,166,242,0.12)" : "rgba(216,166,242,0.22)",
+                  border: "1px solid rgba(216,166,242,0.35)", color: "#D8A6F2",
+                  display: "flex", alignItems: "center", gap: 6, fontWeight: 700,
+                  transition: "all 0.15s ease"
+                }}>
+                {isDbExplorerExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                {isDbExplorerExpanded ? "Collapse View" : "Expand Detailed Database"}
+              </button>
+            </div>
+          </div>
+
+          {/* When Collapsed: Clean 1-Line Teaser Bar */}
+          {!isDbExplorerExpanded && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 4 }}>
+              <span className="mono" style={{ fontSize: 11, color: "#7C93AA" }}>
+                Detailed database view is collapsed. Click <strong>"Expand Detailed Database"</strong> to view full records, submission details &amp; approval statuses.
+              </span>
+              <button
+                onClick={() => setIsDbExplorerExpanded(true)}
+                className="mono"
+                style={{ fontSize: 10.5, padding: "5px 12px", background: "rgba(216,166,242,0.15)", border: "1px solid rgba(216,166,242,0.3)", borderRadius: 4, color: "#D8A6F2", cursor: "pointer", fontWeight: 700, display: "flex", alignItems: "center", gap: 5 }}>
+                <ChevronDown size={13} /> Expand Tables
+              </button>
+            </div>
+          )}
+
+          {/* When Expanded: Full Tables & Detailed Views */}
+          {isDbExplorerExpanded && (
+            <>
+              {/* Module / Table Tabs */}
+              <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 6, marginBottom: 16 }} className="scrollbar-thin">
+                {modules.filter(m => m.active).map(m => {
+                  const isSel = dbTab === m.id;
+                  const rows = db[m.id] || [];
+                  const color = COLORS[m.id] || CUSTOM_PALETTE[m.name.length % CUSTOM_PALETTE.length];
+                  const isEss = m.id === "ess";
+
+                  return (
+                    <button key={m.id} onClick={() => { setDbTab(m.id); setDbStatusFilter("ALL"); setDbSearch(""); }}
+                      className="mono"
+                      style={{
+                        padding: "7px 12px", borderRadius: 5, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 7,
+                        border: isSel ? `1px solid ${color}` : "1px solid rgba(255,255,255,0.08)",
+                        background: isSel ? `${color}18` : "rgba(255,255,255,0.02)",
+                        color: isSel ? color : "#7C93AA",
+                        fontWeight: isSel ? 700 : 500,
+                        transition: "all 0.15s ease",
+                        boxShadow: isSel && isEss ? "0 0 12px rgba(216,166,242,0.2)" : "none"
+                      }}>
+                      <span>{m.name}</span>
+                      <span style={{ fontSize: 9.5, padding: "1px 6px", borderRadius: 8, background: isSel ? `${color}30` : "rgba(255,255,255,0.06)", color: isSel ? "#FFFFFF" : "#5C7891", fontWeight: 700 }}>
+                        {rows.length}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Controls: Search, Filter & Summary */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+                {/* Search Box */}
+                <div style={{ position: "relative", minWidth: 280, flex: 1, maxWidth: 440 }}>
+                  <Search size={14} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#5C7891" }} />
+                  <input
+                    type="text"
+                    className="mono"
+                    placeholder={`Search ${dbTab === "ess" ? "ESS requests, employee, issue, updates..." : "records in table..."}`}
+                    value={dbSearch}
+                    onChange={(e) => setDbSearch(e.target.value)}
+                    style={{
+                      width: "100%", padding: "7px 10px 7px 32px", background: "rgba(0,0,0,0.35)", border: "1px solid rgba(255,255,255,0.12)",
+                      borderRadius: 4, color: "#F4F7FB", fontSize: 11, boxSizing: "border-box"
+                    }}
+                  />
+                  {dbSearch && (
+                    <X size={13} onClick={() => setDbSearch("")} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", color: "#7C93AA", cursor: "pointer" }} />
+                  )}
+                </div>
+
+                {/* Status Filters */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {dbTab === "ess" && (
+                    <>
+                      <span className="mono" style={{ fontSize: 10, color: "#5C7891", marginRight: 2 }}>STATUS:</span>
+                      {[
+                        { id: "ALL", label: "All" },
+                        { id: "PENDING", label: "Pending HR", color: "#F2B84B" },
+                        { id: "APPROVED", label: "Approved", color: "#8CE99A" },
+                        { id: "RESOLVED", label: "Resolved", color: "#6BF2C2" },
+                        { id: "REJECTED", label: "Rejected", color: "#F26B6B" }
+                      ].map(f => {
+                        const active = dbStatusFilter === f.id;
+                        return (
+                          <button key={f.id} onClick={() => setDbStatusFilter(f.id)}
+                            className="mono"
+                            style={{
+                              fontSize: 10, padding: "4px 8px", borderRadius: 3, cursor: "pointer",
+                              border: active ? (f.color ? `1px solid ${f.color}` : "1px solid #D8A6F2") : "1px solid rgba(255,255,255,0.08)",
+                              background: active ? (f.color ? `${f.color}22` : "rgba(216,166,242,0.18)") : "transparent",
+                              color: active ? (f.color || "#D8A6F2") : "#7C93AA",
+                              fontWeight: active ? 700 : 500
+                            }}>
+                            {f.label}
+                          </button>
+                        );
+                      })}
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* ESS Key Metrics Strip (When viewing ESS) */}
+              {dbTab === "ess" && (() => {
+                const essList = db.ess || [];
+                const pending = essList.filter(r => r.status?.includes("Pending") || r.status?.includes("Open"));
+                const approved = essList.filter(r => r.status?.includes("Approved"));
+                const resolved = essList.filter(r => r.status?.includes("Resolved"));
+
+                return (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 14 }}>
+                    <div style={{ background: "rgba(216,166,242,0.06)", border: "1px solid rgba(216,166,242,0.18)", borderRadius: 5, padding: "8px 12px" }}>
+                      <div className="mono" style={{ fontSize: 9.5, color: "#D8A6F2", textTransform: "uppercase" }}>Total Requests Submitted</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: "#F4F7FB", marginTop: 2 }}>{essList.length}</div>
+                      <div className="mono" style={{ fontSize: 9, color: "#7C93AA", marginTop: 1 }}>Logged across 7 ESS services</div>
+                    </div>
+
+                    <div style={{ background: "rgba(242,184,75,0.06)", border: "1px solid rgba(242,184,75,0.22)", borderRadius: 5, padding: "8px 12px" }}>
+                      <div className="mono" style={{ fontSize: 9.5, color: "#F2B84B", textTransform: "uppercase" }}>⏳ Pending HR Verification</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: "#F2B84B", marginTop: 2 }}>{pending.length}</div>
+                      <div className="mono" style={{ fontSize: 9, color: "#7C93AA", marginTop: 1 }}>Awaiting review in Approvals Drawer</div>
+                    </div>
+
+                    <div style={{ background: "rgba(140,233,154,0.06)", border: "1px solid rgba(140,233,154,0.22)", borderRadius: 5, padding: "8px 12px" }}>
+                      <div className="mono" style={{ fontSize: 9.5, color: "#8CE99A", textTransform: "uppercase" }}>✓ Approved &amp; Executed</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: "#8CE99A", marginTop: 2 }}>{approved.length}</div>
+                      <div className="mono" style={{ fontSize: 9, color: "#7C93AA", marginTop: 1 }}>Applied to payroll, attendance &amp; profile</div>
+                    </div>
+
+                    <div style={{ background: "rgba(107,242,194,0.06)", border: "1px solid rgba(107,242,194,0.22)", borderRadius: 5, padding: "8px 12px" }}>
+                      <div className="mono" style={{ fontSize: 9.5, color: "#6BF2C2", textTransform: "uppercase" }}>🎫 Helpdesk Resolved</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: "#6BF2C2", marginTop: 2 }}>{resolved.length}</div>
+                      <div className="mono" style={{ fontSize: 9, color: "#7C93AA", marginTop: 1 }}>IT &amp; HR support tickets closed</div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* The Master Table */}
+              <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, overflowX: "auto", background: "#0D1420", maxHeight: "440px", overflowY: "auto" }} className="scrollbar-thin">
+                {dbTab === "ess" ? (() => {
+                  let list = [...(db.ess || [])].reverse(); // latest first
+                  if (dbStatusFilter === "PENDING") list = list.filter(r => r.status?.includes("Pending") || r.status?.includes("Open"));
+                  else if (dbStatusFilter === "APPROVED") list = list.filter(r => r.status?.includes("Approved"));
+                  else if (dbStatusFilter === "RESOLVED") list = list.filter(r => r.status?.includes("Resolved"));
+                  else if (dbStatusFilter === "REJECTED") list = list.filter(r => r.status?.includes("Rejected"));
+
+                  if (dbSearch.trim()) {
+                    const q = dbSearch.toLowerCase();
+                    list = list.filter(r => {
+                      const { usage, issueOrUpdate, impact } = getEssUsageDetails(r);
+                      return (
+                        String(r.id).toLowerCase().includes(q) ||
+                        String(r.emp).toLowerCase().includes(q) ||
+                        String(r.status).toLowerCase().includes(q) ||
+                        usage.toLowerCase().includes(q) ||
+                        issueOrUpdate.toLowerCase().includes(q) ||
+                        impact.toLowerCase().includes(q)
+                      );
+                    });
+                  }
+
+                  if (!list.length) {
+                    return (
+                      <div className="mono" style={{ padding: "32px 20px", textAlign: "center", color: "#5C7891", fontSize: 12 }}>
+                        — No ESS records matching active search / filter criteria —
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <table className="mono" style={{ width: "100%", fontSize: 11, borderCollapse: "collapse", minWidth: 960 }}>
+                      <thead>
+                        <tr style={{ background: "rgba(216,166,242,0.1)", borderBottom: "1px solid rgba(216,166,242,0.25)" }}>
+                          <th style={{ padding: "9px 12px", textAlign: "left", color: "#D8A6F2", fontWeight: 700, width: 85 }}>REQ ID</th>
+                          <th style={{ padding: "9px 12px", textAlign: "left", color: "#D8A6F2", fontWeight: 700, width: 140 }}>EMPLOYEE</th>
+                          <th style={{ padding: "9px 12px", textAlign: "left", color: "#D8A6F2", fontWeight: 700, width: 190 }}>SERVICE / USAGE</th>
+                          <th style={{ padding: "9px 12px", textAlign: "left", color: "#D8A6F2", fontWeight: 700 }}>SUBMITTED ISSUE / UPDATES</th>
+                          <th style={{ padding: "9px 12px", textAlign: "left", color: "#D8A6F2", fontWeight: 700, width: 160 }}>STATUS</th>
+                          <th style={{ padding: "9px 12px", textAlign: "left", color: "#D8A6F2", fontWeight: 700 }}>SYSTEM WORKFLOW &amp; IMPACT</th>
+                          <th style={{ padding: "9px 12px", textAlign: "center", color: "#D8A6F2", fontWeight: 700, width: 110 }}>ACTIONS</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {list.map((r) => {
+                          const { usage, issueOrUpdate, impact } = getEssUsageDetails(r);
+                          const badge = getStatusBadge(r.status);
+                          const emp = (db.emp_docs || []).find(e => e.name?.toLowerCase() === r.emp?.toLowerCase());
+                          const isPending = r.status?.includes("Pending") || r.status?.includes("Open");
+
+                          return (
+                            <tr key={r.id} className={flash.has(`ess:${r.id}`) ? "flash-row" : ""} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)", background: isPending ? "rgba(242,184,75,0.03)" : "transparent" }}>
+                              {/* ID */}
+                              <td style={{ padding: "8px 12px", color: "#D8A6F2", fontWeight: 700, whiteSpace: "nowrap" }}>
+                                {r.id}
+                              </td>
+
+                              {/* Employee */}
+                              <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                                  <div style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(255,255,255,0.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#DCE6F2" }}>
+                                    {r.emp?.[0]?.toUpperCase()}
+                                  </div>
+                                  <div>
+                                    <div style={{ color: "#F4F7FB", fontWeight: 600, textTransform: "capitalize" }}>{r.emp}</div>
+                                    <div style={{ fontSize: 9.5, color: "#5C7891" }}>{emp?.dept || "Operations"}</div>
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Service / Usage */}
+                              <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+                                <div style={{ color: "#F4F7FB", fontWeight: 600 }}>{usage}</div>
+                                <div style={{ fontSize: 9.5, color: "#7C93AA" }}>Channel: {r.channel || "ESS Portal"}</div>
+                              </td>
+
+                              {/* Submitted Issue / Updates */}
+                              <td style={{ padding: "8px 12px" }}>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                                  {r.request === "Reimbursement Claim" && (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                                      <span style={{ fontSize: 9.5, padding: "1px 6px", borderRadius: 3, background: "rgba(242,107,138,0.15)", color: "#F26B8A", border: "1px solid rgba(242,107,138,0.3)" }}>
+                                        {r.claimCategory || "Travel & Expense"}
+                                      </span>
+                                      <span style={{ color: "#8CE99A", fontWeight: 700, fontSize: 12 }}>
+                                        {r.claimAmount != null ? `₹${Number(r.claimAmount).toLocaleString("en-IN")}` : (r.details?.match(/Rs\.[\d,]+/)?.[0]?.replace("Rs.", "₹") || "₹1,200")}
+                                      </span>
+                                      {r.details && (
+                                        <span style={{ fontSize: 9.5, color: "#9FB4C8" }}>({r.details})</span>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {(r.request === "HR & IT Helpdesk" || r.request === "IT Declaration Submission") && (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                                      <span style={{ fontSize: 9.5, padding: "1px 6px", borderRadius: 3, background: r.ticketPriority === "Urgent" ? "rgba(242,107,107,0.2)" : "rgba(147,196,212,0.15)", color: r.ticketPriority === "Urgent" ? "#F26B6B" : "#93C4D4", border: "1px solid rgba(147,196,212,0.3)" }}>
+                                        {r.ticketPriority || "Standard"} Priority
+                                      </span>
+                                      <span style={{ color: "#F4F7FB", fontWeight: 600 }}>
+                                        {r.ticketSubject || r.details}
+                                      </span>
+                                      {r.ticketDescription && (
+                                        <div style={{ fontSize: 9.5, color: "#7C93AA", fontStyle: "italic", width: "100%" }}>
+                                          "{r.ticketDescription}"
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {r.request === "Profile Update" && (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                                      <span style={{ fontSize: 9.5, padding: "1px 6px", borderRadius: 3, background: "rgba(79,209,197,0.15)", color: "#4FD1C5", border: "1px solid rgba(79,209,197,0.3)" }}>
+                                        {r.profileField || "Profile Field"}
+                                      </span>
+                                      <span style={{ color: "#7C93AA" }}>➔</span>
+                                      <span style={{ color: "#DCE6F2", fontWeight: 600, background: "rgba(0,0,0,0.3)", padding: "1px 5px", borderRadius: 3 }}>
+                                        "{r.profileValue || (r.details?.includes(":") ? r.details.split(":").slice(1).join(":").trim() : r.details) || "Updated"}"
+                                      </span>
+                                    </div>
+                                  )}
+
+                                  {r.request === "Attendance Correction" && (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                                      <span style={{ fontSize: 9.5, padding: "1px 6px", borderRadius: 3, background: "rgba(242,184,75,0.15)", color: "#F2B84B", border: "1px solid rgba(242,184,75,0.3)" }}>
+                                        {r.corrDate || "Today"}
+                                      </span>
+                                      <span style={{ color: "#F4F7FB", fontWeight: 600 }}>{r.corrSession || "Morning Punch IN"}</span>
+                                      <span style={{ fontSize: 9.5, color: "#7C93AA" }}>({r.corrReason || "Biometric Failure"})</span>
+                                    </div>
+                                  )}
+
+                                  {r.request === "Document Request" && (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                                      <span style={{ fontSize: 9.5, padding: "1px 6px", borderRadius: 3, background: "rgba(255,209,102,0.15)", color: "#FFD166", border: "1px solid rgba(255,209,102,0.3)" }}>
+                                        {r.docType || "Bonafide Certificate"}
+                                      </span>
+                                      {r.docPurpose && (
+                                        <span style={{ fontSize: 9.5, color: "#7C93AA" }}>Purpose: {r.docPurpose}</span>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {r.request !== "Reimbursement Claim" && r.request !== "HR & IT Helpdesk" && r.request !== "IT Declaration Submission" && r.request !== "Profile Update" && r.request !== "Attendance Correction" && r.request !== "Document Request" && (
+                                    <div style={{ color: "#DCE6F2" }}>{issueOrUpdate}</div>
+                                  )}
+                                </div>
+                              </td>
+
+                              {/* Approval / Execution Status */}
+                              <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+                                <span style={{
+                                  display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 8px", borderRadius: 12,
+                                  background: badge.bg, color: badge.color, border: `1px solid ${badge.border}`, fontWeight: 700, fontSize: 10
+                                }}>
+                                  <span>{badge.icon}</span>
+                                  <span>{badge.label}</span>
+                                </span>
+                              </td>
+
+                              {/* System Workflow & Impact */}
+                              <td style={{ padding: "8px 12px", color: "#9FB4C8", fontSize: 10 }}>
+                                <div style={{ display: "flex", alignItems: "flex-start", gap: 5 }}>
+                                  <span style={{ color: isPending ? "#F2B84B" : "#8CE99A", flexShrink: 0 }}>⚡</span>
+                                  <span>{impact}</span>
+                                </div>
+                              </td>
+
+                              {/* Actions */}
+                              <td style={{ padding: "8px 12px", textAlign: "center", whiteSpace: "nowrap" }}>
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                                  <button
+                                    onClick={() => setInspectRecord({ id: r.id, module: "Self-Service (ESS)", table: "ess_requests", row: r })}
+                                    className="mono"
+                                    style={{ padding: "3px 7px", fontSize: 9.5, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", cursor: "pointer", display: "flex", alignItems: "center", gap: 3 }}
+                                    title="Inspect full database record & JSON">
+                                    <Eye size={10} /> Inspect
+                                  </button>
+                                  {isPending && (
+                                    <button
+                                      onClick={() => setShowNotifications(true)}
+                                      className="mono"
+                                      style={{ padding: "3px 7px", fontSize: 9.5, background: "rgba(242,184,75,0.12)", border: "1px solid rgba(242,184,75,0.35)", borderRadius: 3, color: "#F2B84B", cursor: "pointer", fontWeight: 600 }}
+                                      title="Open Approvals Drawer to approve or reject">
+                                      Review
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  );
+                })() : (() => {
+                  const currentMod = modules.find(m => m.id === dbTab);
+                  let rows = [...(db[dbTab] || [])];
+                  if (dbSearch.trim()) {
+                    const q = dbSearch.toLowerCase();
+                    rows = rows.filter(r => Object.values(r).some(val => String(val).toLowerCase().includes(q)));
+                  }
+
+                  if (!rows.length) {
+                    return (
+                      <div className="mono" style={{ padding: "32px 20px", textAlign: "center", color: "#5C7891", fontSize: 12 }}>
+                        — No records found in {currentMod?.table || dbTab} —
+                      </div>
+                    );
+                  }
+
+                  // Bug 1 Fix: Compute union of all unique keys across all rows in the dataset
+                  const allKeys = Array.from(new Set(rows.flatMap(r => Object.keys(r))));
+                  // Sort to ensure primary identifier and core business fields appear first
+                  const PRIMARY_KEYS = [
+                    "id", "emp", "name", "type", "asset", "code", "dates", "date", "status",
+                    "balance", "days", "amount", "gross", "pf", "net", "designation", "dept",
+                    "returnedDate", "returnReason", "emiShortfall", "loanArrears", "disbursedMonth"
+                  ];
+                  const cols = [
+                    ...PRIMARY_KEYS.filter(k => allKeys.includes(k)),
+                    ...allKeys.filter(k => !PRIMARY_KEYS.includes(k))
+                  ];
+
+                  return (
+                    <table className="mono" style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ background: "rgba(255,255,255,0.04)", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                          <th style={{ padding: "9px 12px", textAlign: "left", color: COLORS[dbTab] || "#DCE6F2", fontWeight: 700, width: 50 }}>#</th>
+                          {cols.map(c => (
+                            <th key={c} style={{ padding: "9px 12px", textAlign: "left", color: COLORS[dbTab] || "#DCE6F2", fontWeight: 700, textTransform: "uppercase", fontSize: 10 }}>
+                              {c.replace(/_/g, " ")}
+                            </th>
+                          ))}
+                          <th style={{ padding: "9px 12px", textAlign: "center", color: "#7C93AA", width: 80 }}>ACTION</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((r, idx) => (
+                          <tr key={r.id || idx} className={flash.has(`${dbTab}:${r.id}`) ? "flash-row" : ""} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                            <td style={{ padding: "7px 12px", color: "#5C7891", fontSize: 10 }}>{idx + 1}</td>
+                            {cols.map(c => {
+                              let val = r[c];
+                              // Auto-resolve missing dailyRate for emp_docs from DESIGNATION_RATES
+                              if (dbTab === "emp_docs" && c === "dailyRate" && (val === undefined || val === null || val === "")) {
+                                val = DESIGNATION_RATES[r.designation] || 1000;
+                              }
+                              const displayVal = val === undefined || val === null || val === "" ? "—" : String(val);
+                              const isDailyRate = c === "dailyRate" && displayVal !== "—";
+                              return (
+                                <td key={c} style={{
+                                  padding: "7px 12px",
+                                  color: c === "id" ? "#F2B84B" : (isDailyRate ? "#8CE99A" : (displayVal === "—" ? "#415569" : "#DCE6F2")),
+                                  fontWeight: isDailyRate ? 600 : 400,
+                                  whiteSpace: "nowrap",
+                                  maxWidth: 220,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis"
+                                }}>
+                                  {isDailyRate ? `₹${Number(displayVal).toLocaleString("en-IN")}` : displayVal}
+                                </td>
+                              );
+                            })}
+                            <td style={{ padding: "7px 12px", textAlign: "center" }}>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                                <button
+                                  onClick={() => setInspectRecord({ id: r.id, module: currentMod?.name || dbTab, table: currentMod?.table || dbTab, row: r })}
+                                  className="mono"
+                                  style={{ padding: "3px 7px", fontSize: 9.5, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", cursor: "pointer" }}
+                                  title="Inspect full database record">
+                                  <Eye size={10} />
+                                </button>
+                                {/* Item 2.1: In-Service Asset Return Quick Action */}
+                                {dbTab === "assets" && r.status === "Allocated" && (
+                                  <button
+                                    onClick={() => actionReturnAsset(r.id)}
+                                    className="mono"
+                                    style={{ padding: "3px 7px", fontSize: 9.5, background: "rgba(242,148,107,0.15)", border: "1px solid rgba(242,148,107,0.4)", borderRadius: 3, color: "#F2946B", cursor: "pointer", fontWeight: 600 }}
+                                    title="Return or decommission this allocated asset">
+                                    Return
+                                  </button>
+                                )}
+                                {/* Item 2.2: Approved Leave Cancellation Quick Action */}
+                                {dbTab === "attendance_leave" && r.type !== "Attendance" && r.dates !== "Balance" && r.status === "Approved" && (
+                                  <button
+                                    onClick={() => handleCancelApprovedLeave(r)}
+                                    className="mono"
+                                    style={{ padding: "3px 7px", fontSize: 9.5, background: "rgba(242,107,107,0.15)", border: "1px solid rgba(242,107,107,0.4)", borderRadius: 3, color: "#F26B6B", cursor: "pointer", fontWeight: 600 }}
+                                    title="Cancel Approved Leave & Restore Quota Balance">
+                                    Cancel
+                                  </button>
+                                )}
+                                {/* Item 2.4: Notice Period Quick Action: Final Clearance & F&F */}
+                                {dbTab === "emp_docs" && r.status?.includes("Notice Period") && (
+                                  <button
+                                    onClick={() => {
+                                      const ALL_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                                      const exitDate = r.exit_date || getLocalDateStr();
+                                      const exitD = new Date(exitDate);
+                                      const exitMonthStr = `${ALL_MONTHS[exitD.getMonth()]} ${exitD.getFullYear()}`;
+                                      const alreadyPaid = (db.payroll || []).some(p => p.emp === r.name && p.month === exitMonthStr && p.payrollMode !== "Full & Final Settlement");
+                                      const wd = getWorkingDaysInMonthUpToDate(exitDate);
+                                      setModal({
+                                        type: "offboard",
+                                        empId: r.id,
+                                        reason: r.exitReason || "Resignation",
+                                        exitDate: exitDate,
+                                        workingDays: alreadyPaid ? 0 : wd.workingDays,
+                                        separationMode: "final_clearance"
+                                      });
+                                    }}
+                                    className="mono"
+                                    style={{ padding: "3px 8px", fontSize: 9.5, background: "rgba(242,107,107,0.18)", border: "1px solid rgba(242,107,107,0.5)", borderRadius: 3, color: "#F26B6B", cursor: "pointer", fontWeight: 700, whiteSpace: "nowrap" }}
+                                    title="Notice Period Completed: Open Final Day Clearance & Full and Final (F&F) Settlement">
+                                    ⚡ Final Clearance
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  );
+                })()}
+              </div>
+            </>
+          )}
+        </div>
+      ) : (
+        <div id="master-records-explorer-restricted" style={{
+          marginTop: 22,
+          border: "1px dashed rgba(242,184,75,0.35)",
+          borderRadius: 8,
+          background: "linear-gradient(135deg, rgba(13,20,32,0.95), rgba(242,184,75,0.04))",
+          padding: "20px 24px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 16,
+          boxShadow: "0 10px 30px rgba(0,0,0,0.3)"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{
+              width: 44, height: 44, borderRadius: 8,
+              background: "rgba(242,184,75,0.12)",
+              border: "1px solid rgba(242,184,75,0.35)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              flexShrink: 0
+            }}>
+              <Shield size={22} color="#F2B84B" />
+            </div>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 14.5, fontWeight: 700, color: "#F4F7FB" }}>
+                  Master Database &amp; System Audit Trail Restricted
+                </span>
+                <span style={{
+                  fontSize: 10, padding: "2px 8px", borderRadius: 10,
+                  background: "rgba(242,184,75,0.15)", color: "#F2B84B",
+                  border: "1px solid rgba(242,184,75,0.35)", fontWeight: 700
+                }}>
+                  RBAC: EMPLOYEE VIEW ACTIVE
+                </span>
+              </div>
+              <div className="mono" style={{ fontSize: 11, color: "#7C93AA", marginTop: 4, lineHeight: 1.5 }}>
+                Direct PostgreSQL database inspection, raw JSON payloads, and company-wide cross-module records are restricted to HR Administrators and System Auditors under data confidentiality policies.
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setHrViewEnabled(true)}
+            className="mono"
+            style={{
+              padding: "8px 16px",
+              background: "rgba(125,211,252,0.12)",
+              border: "1px solid rgba(125,211,252,0.35)",
+              borderRadius: 5,
+              color: "#7DD3FC",
+              fontSize: 11.5,
+              fontWeight: 700,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 7,
+              transition: "all 0.15s ease"
+            }}>
+            <Users size={14} /> Switch to HR Admin Role
+          </button>
+        </div>
+      )}
+
+      {/* ── Inspect Record Payload Modal ───────────────────────────────────── */}
+      {inspectRecord && hrViewEnabled && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(4,8,14,0.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 85 }}>
+          <div style={{ width: 640, maxHeight: "85vh", background: "#0D1420", border: "1px solid rgba(216,166,242,0.4)", borderRadius: 8, padding: 22, display: "flex", flexDirection: "column", boxShadow: "0 20px 50px rgba(0,0,0,0.6)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                <Database size={18} color="#D8A6F2" />
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: "#F4F7FB" }}>
+                    Record Payload: {inspectRecord.id}
+                  </div>
+                  <div className="mono" style={{ fontSize: 10, color: "#7C93AA" }}>
+                    Module: {inspectRecord.module} · Table: <code style={{ color: "#D8A6F2" }}>{inspectRecord.table}</code>
+                  </div>
+                </div>
+              </div>
+              <X size={18} style={{ cursor: "pointer", color: "#7C93AA" }} onClick={() => setInspectRecord(null)} />
+            </div>
+
+            <div style={{ overflowY: "auto", flex: 1, paddingRight: 4 }} className="scrollbar-thin">
+              <div className="mono" style={{ fontSize: 10, color: "#5C7891", marginBottom: 8, letterSpacing: "0.08em" }}>PARSED ATTRIBUTES</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
+                {Object.entries(inspectRecord.row || {})
+                  .filter(([, v]) => v !== null && v !== undefined && v !== "" && v !== "—")
+                  .map(([k, v]) => (
+                    <div key={k} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 4, padding: "7px 10px" }} className="mono">
+                      <div style={{ fontSize: 9.5, color: "#7C93AA", textTransform: "uppercase" }}>{k.replace(/_/g, " ")}</div>
+                      <div style={{ fontSize: 11, color: "#DCE6F2", marginTop: 2, wordBreak: "break-word" }}>{String(v)}</div>
+                    </div>
+                  ))}
+
+              </div>
+
+              <div className="mono" style={{ fontSize: 10, color: "#5C7891", marginBottom: 6, letterSpacing: "0.08em" }}>RAW JSON PAYLOAD</div>
+              <pre className="mono" style={{ background: "#070B12", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 4, padding: 12, fontSize: 10.5, color: "#8CE99A", overflowX: "auto", whiteSpace: "pre-wrap" }}>
+                {JSON.stringify(inspectRecord.row, null, 2)}
+              </pre>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+              <button className="btn" onClick={() => {
+                navigator.clipboard?.writeText(JSON.stringify(inspectRecord.row, null, 2));
+              }} style={{ borderColor: "#D8A6F2", color: "#D8A6F2", background: "rgba(216,166,242,0.1)" }}>
+                Copy JSON
+              </button>
+              <button className="btn" onClick={() => setInspectRecord(null)} style={{ borderColor: "rgba(255,255,255,0.2)", color: "#7C93AA" }}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal */}
       {showAdd && (
@@ -1449,7 +3793,7 @@ export default function ModuleSimulation() {
                   return (
                     <>
                       {/* Selected employee chip */}
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", marginBottom: 16, background: "rgba(216,166,242,0.08)", border: "1px solid rgba(216,166,242,0.25)", borderRadius: 3 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", marginBottom: 12, background: "rgba(216,166,242,0.08)", border: "1px solid rgba(216,166,242,0.25)", borderRadius: 3 }}>
                         <div style={{ width: 26, height: 26, borderRadius: "50%", background: "rgba(216,166,242,0.2)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                           <span className="mono" style={{ fontSize: 9, color: "#D8A6F2" }}>{emp?.name.split(" ").map(w => w[0]).join("").slice(0, 2)}</span>
                         </div>
@@ -1459,36 +3803,224 @@ export default function ModuleSimulation() {
                           className="mono" style={{ marginLeft: "auto", fontSize: 9, color: "#7C5C90", background: "none", border: "none", cursor: "pointer" }}>← Change</button>
                       </div>
 
+                      {/* Quota balance banner for tracked leaves vs On-Duty vs Special Policies */}
+                      {(() => {
+                        if (leaveType === "On-Duty (OD) / Business Travel") {
+                          return (
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, padding: "7px 10px", background: "rgba(147,196,212,0.08)", border: "1px solid rgba(147,196,212,0.3)", borderRadius: 3 }}>
+                              <span className="mono" style={{ fontSize: 10, color: "#93C4D4" }}>✈️ OFFICIAL BUSINESS / CLIENT TRIP:</span>
+                              <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "#8CE99A" }}>
+                                0 Leaves Deducted · {isHalfDay ? "Rs.500 Half-Day Allowance" : "Rs.1,000/d Allowance"}
+                              </span>
+                            </div>
+                          );
+                        }
+                        if (leaveType === "Maternity Leave") {
+                          return (
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, padding: "7px 10px", background: "rgba(242,107,138,0.08)", border: "1px solid rgba(242,107,138,0.3)", borderRadius: 3 }}>
+                              <span className="mono" style={{ fontSize: 10, color: "#F26B8A" }}>👶 STATUTORY MATERNITY:</span>
+                              <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "#8CE99A" }}>
+                                Up to 84 Days · 100% Fully Paid · 0 Quota Deducted
+                              </span>
+                            </div>
+                          );
+                        }
+                        if (leaveType === "Paternity Leave") {
+                          return (
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, padding: "7px 10px", background: "rgba(107,194,242,0.08)", border: "1px solid rgba(107,194,242,0.3)", borderRadius: 3 }}>
+                              <span className="mono" style={{ fontSize: 10, color: "#6BC2F2" }}>🍼 CORPORATE PATERNITY:</span>
+                              <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "#8CE99A" }}>
+                                Up to 10 Days Max · 100% Fully Paid · 0 Quota Deducted
+                              </span>
+                            </div>
+                          );
+                        }
+                        if (leaveType === "Comp Off") {
+                          return (
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, padding: "7px 10px", background: "rgba(242,184,75,0.08)", border: "1px solid rgba(242,184,75,0.3)", borderRadius: 3 }}>
+                              <span className="mono" style={{ fontSize: 10, color: "#F2B84B" }}>🔄 COMPENSATORY OFF:</span>
+                              <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: "#8CE99A" }}>
+                                Weekend/Holiday Credit · 100% Paid (Max 2d)
+                              </span>
+                            </div>
+                          );
+                        }
+                        const quotaTracked = ["Annual Leave", "Casual Leave", "Sick Leave"].includes(leaveType);
+                        const curAvail = quotaTracked ? getLeaveBalance(emp?.name, leaveType) : null;
+                        return quotaTracked ? (
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, padding: "6px 10px", background: curAvail > 0 ? "rgba(125,211,252,0.06)" : "rgba(242,107,107,0.08)", border: `1px solid ${curAvail > 0 ? "rgba(125,211,252,0.25)" : "rgba(242,107,107,0.3)"}`, borderRadius: 3 }}>
+                            <span className="mono" style={{ fontSize: 10, color: "#7C93AA" }}>AVAILABLE {leaveType.toUpperCase()} QUOTA:</span>
+                            <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: curAvail > 0 ? "#7DD3FC" : "#F26B6B" }}>
+                              {curAvail.toFixed(1)} days
+                            </span>
+                          </div>
+                        ) : null;
+                      })()}
+
                       <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>LEAVE TYPE</label>
-                      <select value={leaveType} onChange={(e) => setLeaveType(e.target.value)}
+                      <select value={leaveType} onChange={(e) => {
+                        const t = e.target.value;
+                        setLeaveType(t);
+                        if (t === "Maternity Leave" || t === "Paternity Leave") {
+                          setIsHalfDay(false);
+                        } else if (t.includes("On-Duty") && isHalfDay) {
+                          setHalfDaySession("Morning Session (Client Visit AM · Office PM)");
+                        }
+                      }}
                         className="mono"
                         style={{ width: "100%", marginTop: 5, marginBottom: 14, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 12.5, boxSizing: "border-box" }}>
-                        {["Annual Leave", "Sick Leave", "Casual Leave", "Maternity Leave", "Paternity Leave", "Comp Off", "Unpaid Leave"].map(t => (
+                        {["Annual Leave", "Casual Leave", "Sick Leave", "On-Duty (OD) / Business Travel", "Maternity Leave", "Paternity Leave", "Comp Off", "Unpaid Leave"].map(t => (
                           <option key={t} value={t}>{t}</option>
                         ))}
                       </select>
 
-                      <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>FROM DATE</label>
+                      {leaveType === "On-Duty (OD) / Business Travel" && (
+                        <>
+                          <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>DESTINATION & TRIP PURPOSE</label>
+                          <input type="text" value={odPurpose} onChange={e => setOdPurpose(e.target.value)}
+                            placeholder="e.g. Client Site Visit, Mumbai / Tech Conference"
+                            className="mono"
+                            style={{ width: "100%", marginTop: 5, marginBottom: 14, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 12.5, boxSizing: "border-box" }}
+                          />
+                        </>
+                      )}
+
+                      {leaveType === "Comp Off" && (
+                        <>
+                          <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>DATE OF WEEKEND / HOLIDAY WORKED</label>
+                          <input type="text" value={compOffWorkedDate} onChange={e => setCompOffWorkedDate(e.target.value)}
+                            placeholder="e.g. 2026-09-13 (Sunday Production Deployment)"
+                            className="mono"
+                            style={{ width: "100%", marginTop: 5, marginBottom: 14, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 12.5, boxSizing: "border-box" }}
+                          />
+                        </>
+                      )}
+
+                      {leaveType === "Maternity Leave" && (
+                        <>
+                          <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>MEDICAL CERTIFICATE / EDD DETAILS</label>
+                          <input type="text" value={medicalCertDate} onChange={e => setMedicalCertDate(e.target.value)}
+                            placeholder="e.g. Expected Delivery: Oct 2026 / Medical Cert #MC-9021"
+                            className="mono"
+                            style={{ width: "100%", marginTop: 5, marginBottom: 14, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 12.5, boxSizing: "border-box" }}
+                          />
+                        </>
+                      )}
+
+                      {(() => {
+                        const isHalfDayEligible = leaveType !== "Maternity Leave" && leaveType !== "Paternity Leave";
+                        if (!isHalfDayEligible) {
+                          return (
+                            <div className="mono" style={{
+                              padding: "9px 12px",
+                              marginTop: 2,
+                              marginBottom: 14,
+                              background: "rgba(242,107,138,0.08)",
+                              border: "1px solid rgba(242,107,138,0.3)",
+                              borderRadius: 3,
+                              fontSize: 11,
+                              lineHeight: 1.45,
+                              color: "#F26B8A"
+                            }}>
+                              {leaveType === "Maternity Leave"
+                                ? "👶 STATUTORY POLICY: Maternity leave is continuous statutory leave granted in full days (up to 84 days) with 100% paid attendance."
+                                : "👨‍🍼 CORPORATE POLICY: Paternity leave is granted in full-day increments upon childbirth (up to 10 days)."}
+                            </div>
+                          );
+                        }
+                        return (
+                          <>
+                            <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>
+                              {leaveType.includes("On-Duty") ? "CLIENT TRIP DURATION" : "LEAVE DURATION"}
+                            </label>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 5, marginBottom: 14 }}>
+                              <div onClick={() => setIsHalfDay(false)}
+                                style={{
+                                  padding: "7px 6px", borderRadius: 3, cursor: "pointer", textAlign: "center", fontSize: 11,
+                                  border: !isHalfDay ? (leaveType.includes("On-Duty") ? "1px solid #93C4D4" : "1px solid #D8A6F2") : "1px solid rgba(255,255,255,0.08)",
+                                  background: !isHalfDay ? (leaveType.includes("On-Duty") ? "rgba(147,196,212,0.18)" : "rgba(216,166,242,0.18)") : "transparent",
+                                  color: !isHalfDay ? (leaveType.includes("On-Duty") ? "#93C4D4" : "#EDD4FA") : "#7C93AA"
+                                }} className="mono">
+                                {leaveType.includes("On-Duty") ? "Full Day (Rs.1,000)" : "Full Day"}
+                              </div>
+                              <div onClick={() => {
+                                setIsHalfDay(true);
+                                if (leaveType.includes("On-Duty") && !halfDaySession.includes("Client Visit")) {
+                                  setHalfDaySession("Morning Session (Client Visit AM · Office PM)");
+                                }
+                              }}
+                                style={{
+                                  padding: "7px 6px", borderRadius: 3, cursor: "pointer", textAlign: "center", fontSize: 11,
+                                  border: isHalfDay ? (leaveType.includes("On-Duty") ? "1px solid #93C4D4" : "1px solid #D8A6F2") : "1px solid rgba(255,255,255,0.08)",
+                                  background: isHalfDay ? (leaveType.includes("On-Duty") ? "rgba(147,196,212,0.18)" : "rgba(216,166,242,0.18)") : "transparent",
+                                  color: isHalfDay ? (leaveType.includes("On-Duty") ? "#93C4D4" : "#EDD4FA") : "#7C93AA"
+                                }} className="mono">
+                                {leaveType.includes("On-Duty") ? "Half Day (Rs.500)" : "Half Day (0.5d)"}
+                              </div>
+                            </div>
+
+                            {leaveType.includes("On-Duty") && isHalfDay && (
+                              <div className="mono" style={{
+                                padding: "7px 10px", marginBottom: 12, borderRadius: 3, fontSize: 10.5,
+                                background: "rgba(147,196,212,0.08)", border: "1px solid rgba(147,196,212,0.25)", color: "#93C4D4"
+                              }}>
+                                🏢 Office session attendance punch remains active &amp; required for the other half of the workday.
+                              </div>
+                            )}
+
+                            {isHalfDay && (
+                              <>
+                                <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>HALF-DAY SHIFT SESSION</label>
+                                <select value={halfDaySession} onChange={e => setHalfDaySession(e.target.value)}
+                                  className="mono"
+                                  style={{ width: "100%", marginTop: 5, marginBottom: 14, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 12.5, boxSizing: "border-box" }}>
+                                  {leaveType.includes("On-Duty") ? (
+                                    <>
+                                      <option value="Morning Session (Client Visit AM · Office PM)">Morning Session (Client Visit AM · Office PM)</option>
+                                      <option value="Afternoon Session (Office AM · Client Visit PM)">Afternoon Session (Office AM · Client Visit PM)</option>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <option value="First Half (Morning)">First Half (Morning Shift)</option>
+                                      <option value="Second Half (Afternoon)">Second Half (Afternoon Shift)</option>
+                                    </>
+                                  )}
+                                </select>
+                              </>
+                            )}
+                          </>
+                        );
+                      })()}
+
+                      <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>{isHalfDay ? "LEAVE DATE" : "FROM DATE"}</label>
                       <input type="date" value={leaveStartDate} onChange={e => setLeaveStartDate(e.target.value)}
                         className="mono"
                         style={{ width: "100%", marginTop: 5, marginBottom: 14, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 13, boxSizing: "border-box", colorScheme: "dark" }}
                       />
 
-                      <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>NUMBER OF DAYS</label>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 5, marginBottom: 14 }}>
-                        <input type="number" min={1} max={30} value={leaveDays}
-                          onChange={(e) => setLeaveDays(Math.max(1, Math.min(30, Number(e.target.value))))}
-                          className="mono"
-                          style={{ width: 80, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 13, textAlign: "center" }}
-                        />
-                        <div className="mono" style={{ fontSize: 11, color: "#4A6070", lineHeight: 1.5 }}>
-                          {fmt(start)}{Number(leaveDays) > 1 ? ` → ${fmt(end)}` : ""}
+                      {!isHalfDay ? (
+                        <>
+                          <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>NUMBER OF DAYS</label>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 5, marginBottom: 14 }}>
+                            <input type="number" min={1} max={leaveType === "Maternity Leave" ? 84 : (leaveType === "Paternity Leave" ? 10 : (leaveType === "Comp Off" ? 2 : 30))} value={leaveDays}
+                              onChange={(e) => setLeaveDays(Math.max(1, Math.min(leaveType === "Maternity Leave" ? 84 : (leaveType === "Paternity Leave" ? 10 : (leaveType === "Comp Off" ? 2 : 30)), Number(e.target.value))))}
+                              className="mono"
+                              style={{ width: 80, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 13, textAlign: "center" }}
+                            />
+                            <div className="mono" style={{ fontSize: 11, color: "#4A6070", lineHeight: 1.5 }}>
+                              {fmt(start)}{Number(leaveDays) > 1 ? ` → ${fmt(end)}` : ""}
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="mono" style={{ fontSize: 11, color: "#8CE99A", marginBottom: 14 }}>
+                          ⚡ Half-day request: 0.5 days allocated on {fmt(start)} ({halfDaySession})
                         </div>
-                      </div>
+                      )}
 
                       <button className="btn" onClick={confirmApplyLeave}
-                        style={{ width: "100%", textAlign: "center", borderColor: "#D8A6F2", color: "#EDD4FA", background: "rgba(216,166,242,0.1)" }}>
-                        SUBMIT LEAVE REQUEST
+                        style={{ width: "100%", textAlign: "center", borderColor: leaveType.includes("On-Duty") ? "#93C4D4" : "#D8A6F2", color: leaveType.includes("On-Duty") ? "#93C4D4" : "#EDD4FA", background: leaveType.includes("On-Duty") ? "rgba(147,196,212,0.1)" : "rgba(216,166,242,0.1)" }}>
+                        {leaveType.includes("On-Duty") ? "SUBMIT ON-DUTY TRAVEL REQUEST" : "SUBMIT LEAVE REQUEST"}
                       </button>
                     </>
                   );
@@ -1504,19 +4036,40 @@ export default function ModuleSimulation() {
           attendance: { title: "Mark Attendance", border: "rgba(125,211,252,0.4)", accent: "#7DD3FC" },
           appraisal: { title: "Log Appraisal", border: "rgba(242,184,75,0.4)", accent: "#F2B84B" },
           asset: { title: "Assign Company Asset", border: "rgba(242,148,107,0.4)", accent: "#F2946B" },
+          return_asset: { title: "Return Company Asset", border: "rgba(242,148,107,0.4)", accent: "#F2946B" },
+          manage_asset: { title: "Company Asset Management", border: "rgba(242,148,107,0.4)", accent: "#F2946B" },
           loan: { title: "Apply for Loan", border: "rgba(147,196,212,0.4)", accent: "#93C4D4" },
           allowance: { title: "Add Special Allowance", border: "rgba(242,107,138,0.4)", accent: "#F26B8A" },
           ess: { title: "ESS Request", border: "rgba(216,166,242,0.4)", accent: "#D8A6F2" },
           transfer: { title: "Internal Transfer", border: "rgba(110,231,183,0.4)", accent: "#6EE7B7" },
           promote: { title: "Promote Employee", border: "rgba(252,211,77,0.4)", accent: "#FCD34D" },
+          mobility: { title: "Internal Talent Mobility & Career", border: "rgba(110,231,183,0.4)", accent: "#6EE7B7" },
           offboard: { title: "Offboard Employee", border: "rgba(239,68,68,0.4)", accent: "#EF4444" },
           custom: { title: modal.modName, border: "rgba(129,140,248,0.4)", accent: "#818CF8" },
+          award: { title: "Nominate Excellence Award", border: "rgba(255,209,102,0.4)", accent: "#FFD166" },
+          payroll_cycle: { title: "Run Monthly Payroll Cycle", border: "rgba(140,233,154,0.4)", accent: "#8CE99A" },
         };
         const meta = MODAL_META[modal.type] || {};
         const INP = { width: "100%", padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 12.5, boxSizing: "border-box", marginTop: 5, marginBottom: 14 };
         const SEL = { ...INP, appearance: "auto" };
         const LBL = { fontSize: 10, color: "#5C7891", letterSpacing: "0.08em", textTransform: "uppercase" };
-        const CONFIRM_FN = { attendance: confirmMarkAttendance, appraisal: confirmLogAppraisal, asset: confirmAssignAsset, loan: confirmApplyLoan, allowance: confirmAddAllowance, ess: confirmESS, transfer: confirmTransfer, promote: confirmPromote, offboard: confirmOffboard, custom: confirmCustomAction };
+        const CONFIRM_FN = {
+          attendance: confirmMarkAttendance,
+          appraisal: confirmLogAppraisal,
+          asset: confirmAssignAsset,
+          return_asset: confirmReturnAsset,
+          manage_asset: () => (modal.subTab === "return" ? confirmReturnAsset() : confirmAssignAsset()),
+          loan: confirmApplyLoan,
+          allowance: confirmAddAllowance,
+          ess: confirmESS,
+          transfer: confirmTransfer,
+          promote: confirmPromote,
+          mobility: () => (modal.subTab === "transfer" ? confirmTransfer() : confirmPromote()),
+          offboard: confirmOffboard,
+          custom: confirmCustomAction,
+          award: confirmNominateAward,
+          payroll_cycle: confirmRunPayrollCycle
+        };
 
         /* Shared employee picker */
         const EmpPicker = () => {
@@ -1529,7 +4082,27 @@ export default function ModuleSimulation() {
                 {filtered.map(emp => {
                   const sel = modal.empId === emp.id;
                   return (
-                    <div key={emp.id} onClick={() => setModal(m => ({ ...m, empId: emp.id }))}
+                    <div key={emp.id} onClick={() => setModal(m => {
+                      const next = { ...m, empId: emp.id };
+                      if (m.type === "return_asset" || (m.type === "manage_asset" && m.subTab === "return")) {
+                        const matchingAsset = (db.assets || []).find(a => a.emp === emp.name && a.status === "Allocated");
+                        if (matchingAsset) next.assetId = matchingAsset.id;
+                      }
+                      if (m.type === "offboard") {
+                        const todayStr = getLocalDateStr();
+                        const isNotice = emp.status?.includes("Notice Period");
+                        const exitDate = isNotice && emp.exit_date ? emp.exit_date : (m.exitDate || todayStr);
+                        const ALL_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                        const exitD = new Date(exitDate);
+                        const exitMonthStr = `${ALL_MONTHS[exitD.getMonth()]} ${exitD.getFullYear()}`;
+                        const alreadyPaid = (db.payroll || []).some(p => p.emp === emp.name && p.month === exitMonthStr && p.payrollMode !== "Full & Final Settlement");
+                        const wd = getWorkingDaysInMonthUpToDate(exitDate);
+                        next.exitDate = exitDate;
+                        next.workingDays = alreadyPaid ? 0 : wd.workingDays;
+                        next.separationMode = isNotice ? "final_clearance" : (exitDate > todayStr ? "notice" : "final_clearance");
+                      }
+                      return next;
+                    })}
                       style={{
                         display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 3, cursor: "pointer",
                         border: sel ? `1px solid ${meta.accent}` : "1px solid rgba(255,255,255,0.07)",
@@ -1564,8 +4137,12 @@ export default function ModuleSimulation() {
                 <X size={16} style={{ cursor: "pointer", color: "#7C93AA" }} onClick={() => setModal(null)} />
               </div>
 
-              <EmpPicker />
-              <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", marginBottom: 14 }} />
+              {modal.type !== "custom" && modal.type !== "payroll_cycle" && (
+                <>
+                  <EmpPicker />
+                  <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", marginBottom: 14 }} />
+                </>
+              )}
 
               {/* ── Attendance fields ── */}
               {modal.type === "attendance" && <>
@@ -1593,51 +4170,479 @@ export default function ModuleSimulation() {
               </>}
 
               {/* ── Offboard fields ── */}
-              {modal.type === "offboard" && <>
-                <div className="mono" style={LBL}>OFFBOARDING REASON</div>
-                <select value={modal.reason} onChange={e => setModal(m => ({ ...m, reason: e.target.value }))} className="mono" style={SEL}>
-                  {["Resignation", "Termination", "Retirement", "Contract Ended"].map(r => <option key={r} value={r}>{r}</option>)}
-                </select>
-                <div className="mono" style={LBL}>EXIT DATE</div>
-                <input type="date" value={modal.exitDate} onChange={e => setModal(m => ({ ...m, exitDate: e.target.value }))} className="mono" style={INP} />
-                <div className="mono" style={{ fontSize: 10, color: "#EF4444", marginTop: 4, lineHeight: 1.6 }}>
-                  Warning: Offboarding will immediately revoke biometric access for this employee. Record will be preserved as Inactive.
-                </div>
-              </>}
+              {modal.type === "offboard" && (() => {
+                const offEmp = (db.emp_docs || []).find(e => e.id === modal.empId);
+                const isNoticeEmp = offEmp?.status?.includes("Notice Period");
+                const todayStr = getLocalDateStr();
+                const isFutureDate = (modal.exitDate || todayStr) > todayStr;
+                const currentMode = modal.separationMode || (isNoticeEmp ? "final_clearance" : (isFutureDate ? "notice" : "final_clearance"));
+
+                return (
+                  <>
+                    <div className="mono" style={LBL}>SEPARATION PROTOCOL</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7, marginBottom: 12 }}>
+                      <div
+                        onClick={() => setModal(m => ({ ...m, separationMode: "notice" }))}
+                        style={{
+                          padding: "8px 10px", borderRadius: 4, cursor: "pointer",
+                          border: currentMode === "notice" ? "1px solid #FFD166" : "1px solid rgba(255,255,255,0.08)",
+                          background: currentMode === "notice" ? "rgba(255,209,102,0.14)" : "rgba(255,255,255,0.02)",
+                          transition: "all 0.15s ease"
+                        }}
+                      >
+                        <div className="mono" style={{ fontSize: 11, fontWeight: 700, color: currentMode === "notice" ? "#FFD166" : "#DCE6F2" }}>
+                          📋 Notice Period
+                        </div>
+                        <div className="mono" style={{ fontSize: 9, color: currentMode === "notice" ? "#FFEAA7" : "#7C93AA", marginTop: 2 }}>
+                          Active for Oct/Nov payroll
+                        </div>
+                      </div>
+
+                      <div
+                        onClick={() => setModal(m => ({ ...m, separationMode: "final_clearance" }))}
+                        style={{
+                          padding: "8px 10px", borderRadius: 4, cursor: "pointer",
+                          border: currentMode === "final_clearance" ? "1px solid #F26B6B" : "1px solid rgba(255,255,255,0.08)",
+                          background: currentMode === "final_clearance" ? "rgba(242,107,107,0.14)" : "rgba(255,255,255,0.02)",
+                          transition: "all 0.15s ease"
+                        }}
+                      >
+                        <div className="mono" style={{ fontSize: 11, fontWeight: 700, color: currentMode === "final_clearance" ? "#F26B6B" : "#DCE6F2" }}>
+                          ⚡ Final Clearance (F&amp;F)
+                        </div>
+                        <div className="mono" style={{ fontSize: 9, color: currentMode === "final_clearance" ? "#FCA5A5" : "#7C93AA", marginTop: 2 }}>
+                          Return assets &amp; F&amp;F closure
+                        </div>
+                      </div>
+                    </div>
+
+                    {currentMode === "notice" && (
+                      <div className="mono" style={{ fontSize: 9.5, color: "#FFD166", background: "rgba(255,209,102,0.08)", border: "1px solid rgba(255,209,102,0.25)", padding: "7px 10px", borderRadius: 4, marginBottom: 12 }}>
+                        ℹ️ <strong>Notice Period Protocol:</strong> {offEmp?.name || "Employee"} will transition to <em>"Serving Notice Period"</em> until {modal.exitDate}. They will <strong>remain active</strong> in the employee directory for monthly payroll runs (Oct, Nov, etc.) and attendance tracking until final clearance is executed on their exit date.
+                      </div>
+                    )}
+                    {isNoticeEmp && currentMode === "final_clearance" && (
+                      <div className="mono" style={{ fontSize: 9.5, color: "#8CE99A", background: "rgba(140,233,154,0.08)", border: "1px solid rgba(140,233,154,0.25)", padding: "7px 10px", borderRadius: 4, marginBottom: 12 }}>
+                        🛡️ <strong>Notice Period Complete / Clearance Ready:</strong> {offEmp?.name} is serving notice (Exit: {offEmp?.exit_date || modal.exitDate}). Executing will finalize asset recovery, clear outstanding loans, and disburse Full &amp; Final (F&amp;F) Settlement.
+                      </div>
+                    )}
+
+                    <div className="mono" style={LBL}>OFFBOARDING REASON</div>
+                    <select value={modal.reason} onChange={e => setModal(m => ({ ...m, reason: e.target.value }))} className="mono" style={SEL}>
+                      {["Resignation", "Termination", "Retirement", "Contract Ended"].map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+
+                    <div style={{ display: "grid", gridTemplateColumns: currentMode === "notice" ? "1fr" : "1.2fr 1fr", gap: 10 }}>
+                      <div>
+                        <div className="mono" style={LBL}>{currentMode === "notice" ? "FINAL WORKING DAY (EXIT DATE)" : "EXIT DATE"}</div>
+                        <input
+                          type="date"
+                          value={modal.exitDate}
+                          onChange={e => {
+                            const newDate = e.target.value;
+                            const ALL_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                            const exitD = new Date(newDate);
+                            const exitMonthStr = `${ALL_MONTHS[exitD.getMonth()]} ${exitD.getFullYear()}`;
+                            const alreadyPaid = offEmp && (db.payroll || []).some(p => p.emp === offEmp.name && p.month === exitMonthStr && p.payrollMode !== "Full & Final Settlement");
+                            const wd = getWorkingDaysInMonthUpToDate(newDate);
+                            const autoMode = isNoticeEmp ? "final_clearance" : (newDate > todayStr ? "notice" : "final_clearance");
+                            setModal(m => ({
+                              ...m,
+                              exitDate: newDate,
+                              workingDays: alreadyPaid ? 0 : wd.workingDays,
+                              separationMode: autoMode
+                            }));
+                          }}
+                          className="mono"
+                          style={INP}
+                        />
+                      </div>
+                      {currentMode !== "notice" && (
+                        <div>
+                          <div className="mono" style={LBL}>FINAL MONTH BILLABLE DAYS</div>
+                          <input
+                            type="number"
+                            min={0}
+                            max={31}
+                            value={modal.workingDays !== undefined ? modal.workingDays : getWorkingDaysInMonthUpToDate(modal.exitDate).workingDays}
+                            onChange={e => setModal(m => ({ ...m, workingDays: Math.max(0, Math.min(31, Number(e.target.value))) }))}
+                            className="mono"
+                            style={INP}
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    {currentMode === "final_clearance" ? (
+                      /* Clearance Preview Card */
+                      (() => {
+                        const ALL_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                        const exitD = new Date(modal.exitDate || new Date());
+                        const exitMonthStr = `${ALL_MONTHS[exitD.getMonth()]} ${exitD.getFullYear()}`;
+                        const alreadyPaid = offEmp && (db.payroll || []).some(p => p.emp === offEmp.name && p.month === exitMonthStr && p.payrollMode !== "Full & Final Settlement");
+
+                        const empAssetsToClear = (db.assets || []).filter(a =>
+                          a.emp?.trim().toLowerCase() === offEmp?.name?.trim().toLowerCase() &&
+                          (!a.status?.includes("Returned") && !a.status?.includes("Recovered"))
+                        );
+                        const empLoansToClear = (db.loans || []).filter(l => l.emp === offEmp?.name && (l.status.includes("Active") || l.status === "Under Review"));
+                        const alBal = offEmp ? getLeaveBalance(offEmp.name, "Annual Leave") : 0;
+                        const dailyR = offEmp?.dailyRate || (offEmp?.designation ? DESIGNATION_RATES[offEmp.designation] : 1000) || 1000;
+                        const wdInfo = getWorkingDaysInMonthUpToDate(modal.exitDate);
+                        const activeWd = modal.workingDays !== undefined ? modal.workingDays : (alreadyPaid ? 0 : wdInfo.workingDays);
+                        const estEarned = Math.round(activeWd * dailyR);
+                        const estEncash = Math.round(alBal * dailyR);
+
+                        return (
+                          <div style={{
+                            marginTop: 10, marginBottom: 12, padding: "10px 12px",
+                            background: "rgba(242,107,107,0.06)", border: "1px solid rgba(242,107,107,0.25)",
+                            borderRadius: 4
+                          }}>
+                            <div className="mono" style={{ fontSize: 9.5, color: "#F26B6B", fontWeight: 700, letterSpacing: "0.08em", marginBottom: 6, display: "flex", alignItems: "center", gap: 5 }}>
+                              <AlertTriangle size={12} color="#F26B6B" /> PRE-OFFBOARDING CLEARANCE PREVIEW ({offEmp?.name || "EMPLOYEE"})
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 5, fontSize: 11 }} className="mono">
+                              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                                <span style={{ color: "#7C93AA" }}>💼 Prorated Earned Wage:</span>
+                                <span style={{ color: activeWd > 0 ? "#8CE99A" : "#7C93AA", fontWeight: 600 }}>
+                                  {activeWd > 0
+                                    ? `${activeWd} working days (Est: Rs.${estEarned.toLocaleString("en-IN")})`
+                                    : (alreadyPaid ? `Rs.0 (Payroll for ${exitMonthStr} already disbursed)` : "Rs.0 (0 days)")}
+                                </span>
+                              </div>
+                              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                                <span style={{ color: "#7C93AA" }}>🌴 Leave Encashment:</span>
+                                <span style={{ color: "#7DD3FC", fontWeight: 600 }}>
+                                  {alBal.toFixed(1)}d Annual Leave (Est: Rs.{estEncash.toLocaleString("en-IN")})
+                                </span>
+                              </div>
+                              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                                <span style={{ color: "#7C93AA" }}>📦 Hardware Assets:</span>
+                                <span style={{ color: empAssetsToClear.length > 0 ? "#FFD166" : "#8CE99A", fontWeight: 600 }}>
+                                  {empAssetsToClear.length > 0 ? `${empAssetsToClear.length} to recover (${empAssetsToClear.map(a => a.asset).join(", ")})` : "None (Clear)"}
+                                </span>
+                              </div>
+                              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                                <span style={{ color: "#7C93AA" }}>💳 Outstanding Loans:</span>
+                                <span style={{ color: empLoansToClear.length > 0 ? "#F26B6B" : "#8CE99A", fontWeight: 600 }}>
+                                  {empLoansToClear.length > 0 ? `${empLoansToClear.length} to settle via F&F` : "None (Clear)"}
+                                </span>
+                              </div>
+                              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                                <span style={{ color: "#7C93AA" }}>🔒 Access Credentials:</span>
+                                <span style={{ color: "#F26B6B", fontWeight: 600 }}>Biometrics Locked · Account Inactivated</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()
+                    ) : (
+                      /* Notice Period Active Summary */
+                      <div style={{
+                        marginTop: 10, marginBottom: 12, padding: "10px 12px",
+                        background: "rgba(255,209,102,0.06)", border: "1px solid rgba(255,209,102,0.25)",
+                        borderRadius: 4
+                      }}>
+                        <div className="mono" style={{ fontSize: 9.5, color: "#FFD166", fontWeight: 700, letterSpacing: "0.08em", marginBottom: 6, display: "flex", alignItems: "center", gap: 5 }}>
+                          🛡️ ACTIVE NOTICE PERIOD STATUS
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 5, fontSize: 11 }} className="mono">
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span style={{ color: "#7C93AA" }}>🏢 Roster Status:</span>
+                            <span style={{ color: "#8CE99A", fontWeight: 600 }}>Active (Included in Oct &amp; Nov Payroll)</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span style={{ color: "#7C93AA" }}>💻 Hardware Assets:</span>
+                            <span style={{ color: "#8CE99A", fontWeight: 600 }}>Retained during notice period</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span style={{ color: "#7C93AA" }}>👆 Biometric Access:</span>
+                            <span style={{ color: "#8CE99A", fontWeight: 600 }}>Active (Punches permitted)</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span style={{ color: "#7C93AA" }}>💳 F&amp;F Settlement:</span>
+                            <span style={{ color: "#FFD166", fontWeight: 600 }}>Scheduled on Final Working Day</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
 
               {/* ── Appraisal fields ── */}
-              {modal.type === "appraisal" && <>
-                <div className="mono" style={LBL}>APPRAISAL CYCLE</div>
-                <select value={modal.cycle} onChange={e => setModal(m => ({ ...m, cycle: e.target.value }))} className="mono" style={SEL}>
-                  {["Q1 FY2026", "Q2 FY2026", "Q3 FY2026", "Q4 FY2026", "Annual FY2026"].map(c => <option key={c}>{c}</option>)}
-                </select>
-                <div className="mono" style={LBL}>RATING</div>
-                <select value={modal.rating} onChange={e => setModal(m => ({ ...m, rating: e.target.value }))} className="mono" style={SEL}>
-                  {["Outstanding", "Exceeds Expectations", "Meets Expectations", "Needs Improvement", "Unsatisfactory"].map(r => <option key={r}>{r}</option>)}
-                </select>
-                <div className="mono" style={LBL}>KPI SCORE (%)</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 5, marginBottom: 14 }}>
-                  <input type="range" min={0} max={100} value={modal.kpi} onChange={e => setModal(m => ({ ...m, kpi: Number(e.target.value) }))}
-                    style={{ flex: 1, accentColor: meta.accent }} />
-                  <span className="mono" style={{ fontSize: 14, color: meta.accent, minWidth: 42, textAlign: "right", fontWeight: 700 }}>{modal.kpi}%</span>
-                </div>
-              </>}
+              {modal.type === "appraisal" && (() => {
+                const curYear = modal.fiscalYear || (modal.cycle ? parseInt(modal.cycle.match(/\d{4}/)?.[0], 10) : 2026) || 2026;
+                const quarters = ["Q1", "Q2", "Q3", "Q4"];
+                const curQuarter = modal.quarter || quarters.find(q => modal.cycle?.startsWith(q)) || "Q3";
 
-              {/* ── Asset fields ── */}
-              {modal.type === "asset" && <>
-                <div className="mono" style={LBL}>ASSET TYPE</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6, marginBottom: 14 }}>
-                  {["Laptop", "Mobile Phone", "Monitor", "Ergonomic Chair", "Access Card", "Headset", "Keyboard", "Webcam"].map(a => (
-                    <div key={a} onClick={() => setModal(m => ({ ...m, assetType: a }))}
-                      style={{
-                        padding: "8px 10px", borderRadius: 3, cursor: "pointer", fontSize: 11,
-                        border: modal.assetType === a ? `1px solid ${meta.accent}` : "1px solid rgba(255,255,255,0.08)",
-                        background: modal.assetType === a ? `${meta.accent}22` : "transparent",
-                        color: modal.assetType === a ? meta.accent : "#7C93AA"
-                      }} className="mono">{a}</div>
-                  ))}
-                </div>
-              </>}
+                const handleYearChange = (delta) => {
+                  const newYear = Math.max(2020, Math.min(2035, curYear + delta));
+                  const newCycle = `${curQuarter} FY${newYear}`;
+                  setModal(m => ({ ...m, fiscalYear: newYear, cycle: newCycle }));
+                };
+
+                const handleResetYear = () => {
+                  const resetYear = 2026;
+                  const newCycle = `${curQuarter} FY${resetYear}`;
+                  setModal(m => ({ ...m, fiscalYear: resetYear, cycle: newCycle }));
+                };
+
+                return (
+                  <>
+                    {/* Fiscal Year Stepper with Reset Year Option */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                      <div className="mono" style={LBL}>FISCAL YEAR</div>
+                      {curYear !== 2026 && (
+                        <button
+                          type="button"
+                          onClick={handleResetYear}
+                          className="mono"
+                          style={{
+                            fontSize: 10, padding: "2px 8px", background: "rgba(255,209,102,0.12)",
+                            border: "1px solid rgba(255,209,102,0.35)", color: "#FFD166", borderRadius: 3, cursor: "pointer",
+                            display: "flex", alignItems: "center", gap: 3
+                          }}>
+                          ↺ Reset Year (2026)
+                        </button>
+                      )}
+                    </div>
+
+                    <div style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+                      marginBottom: 12, background: "rgba(0,0,0,0.3)", padding: "6px 10px",
+                      borderRadius: 4, border: "1px solid rgba(255,255,255,0.08)"
+                    }}>
+                      <button
+                        type="button"
+                        onClick={() => handleYearChange(-1)}
+                        className="mono"
+                        style={{
+                          padding: "4px 9px", fontSize: 11, background: "rgba(255,255,255,0.05)",
+                          border: "1px solid rgba(255,255,255,0.15)", borderRadius: 3, color: "#DCE6F2", cursor: "pointer"
+                        }}>
+                        ◀ Prev FY
+                      </button>
+                      <div style={{ textAlign: "center" }}>
+                        <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: meta.accent, letterSpacing: "0.04em" }}>
+                          FY{curYear}
+                        </span>
+                        <span style={{ fontSize: 9.5, color: "#5C7891", marginLeft: 6 }}>
+                          ({curYear}–{String(curYear + 1).slice(2)})
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleYearChange(1)}
+                        className="mono"
+                        style={{
+                          padding: "4px 9px", fontSize: 11, background: "rgba(255,255,255,0.05)",
+                          border: "1px solid rgba(255,255,255,0.15)", borderRadius: 3, color: "#DCE6F2", cursor: "pointer"
+                        }}>
+                        Next FY ▶
+                      </button>
+                    </div>
+
+                    <div className="mono" style={LBL}>APPRAISAL CYCLE (QUARTER)</div>
+                    <select
+                      value={modal.cycle || `${curQuarter} FY${curYear}`}
+                      onChange={e => {
+                        const val = e.target.value;
+                        const q = quarters.find(k => val.startsWith(k)) || "Q3";
+                        setModal(m => ({ ...m, cycle: val, quarter: q }));
+                      }}
+                      className="mono"
+                      style={SEL}
+                    >
+                      {quarters.map(q => {
+                        const optVal = `${q} FY${curYear}`;
+                        return <option key={optVal} value={optVal}>{optVal}</option>;
+                      })}
+                    </select>
+
+                    <div className="mono" style={LBL}>RATING</div>
+                    <select value={modal.rating} onChange={e => setModal(m => ({ ...m, rating: e.target.value }))} className="mono" style={SEL}>
+                      {["Outstanding", "Exceeds Expectations", "Meets Expectations", "Needs Improvement", "Unsatisfactory"].map(r => <option key={r}>{r}</option>)}
+                    </select>
+
+                    <div className="mono" style={LBL}>KPI SCORE (%)</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 5, marginBottom: 14 }}>
+                      <input type="range" min={0} max={100} value={modal.kpi} onChange={e => setModal(m => ({ ...m, kpi: Number(e.target.value) }))}
+                        style={{ flex: 1, accentColor: meta.accent }} />
+                      <span className="mono" style={{ fontSize: 14, color: meta.accent, minWidth: 42, textAlign: "right", fontWeight: 700 }}>{modal.kpi}%</span>
+                    </div>
+                  </>
+                );
+              })()}
+
+              {/* ── Award fields ── */}
+              {modal.type === "award" && (() => {
+                const selectedEmp = (db.emp_docs || []).find(e => e.id === modal.empId);
+                const perfRecords = (db.performance || []).filter(r => r.emp === selectedEmp?.name);
+                const latest = perfRecords.length ? perfRecords[perfRecords.length - 1] : null;
+                const awardCats = ["Star Performer", "Innovation Champion", "Team Player", "Rising Star", "Spot Excellence Award"];
+                return (
+                  <>
+                    {/* Appraisal status banner */}
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", marginBottom: 14,
+                      background: latest ? "rgba(255,209,102,0.08)" : "rgba(255,255,255,0.04)",
+                      border: latest ? "1px solid rgba(255,209,102,0.3)" : "1px solid rgba(255,255,255,0.1)",
+                      borderRadius: 3
+                    }}>
+                      <Award size={16} style={{ color: meta.accent, flexShrink: 0 }} />
+                      <div style={{ fontSize: 11 }}>
+                        {latest ? (
+                          <>
+                            <span style={{ color: "#F4F7FB", fontWeight: 600 }}>Appraisal on File: </span>
+                            <span style={{ color: meta.accent }}>{latest.cycle} — {latest.rating} ({latest.kpiScore || "—"} KPI)</span>
+                          </>
+                        ) : (
+                          <span style={{ color: "#7C93AA" }}>Direct Spot Award (No prior appraisal required)</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mono" style={LBL}>AWARD CATEGORY</div>
+                    <select
+                      value={modal.category}
+                      onChange={e => {
+                        const cat = e.target.value;
+                        setModal(m => ({ ...m, category: cat, cashReward: AWARD_REWARDS[cat] || 2000 }));
+                      }}
+                      className="mono"
+                      style={SEL}
+                    >
+                      {awardCats.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+
+                    <div className="mono" style={LBL}>CASH REWARD (RS.) — DISBURSED IN PAYROLL</div>
+                    <div style={{ display: "flex", gap: 8, marginTop: 6, marginBottom: 14 }}>
+                      {[1500, 2000, 3500, 5000].map(amt => (
+                        <div
+                          key={amt}
+                          onClick={() => setModal(m => ({ ...m, cashReward: amt }))}
+                          style={{
+                            flex: 1, padding: "7px 0", textAlign: "center", borderRadius: 3, cursor: "pointer", fontSize: 11,
+                            border: modal.cashReward === amt ? `1px solid ${meta.accent}` : "1px solid rgba(255,255,255,0.08)",
+                            background: modal.cashReward === amt ? `${meta.accent}22` : "transparent",
+                            color: modal.cashReward === amt ? meta.accent : "#7C93AA"
+                          }}
+                          className="mono"
+                        >
+                          ₹{amt.toLocaleString("en-IN")}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
+
+              {/* ── Manage Assets (Unified Allocation & In-Service Return) ── */}
+              {(modal.type === "manage_asset" || modal.type === "asset" || modal.type === "return_asset") && (() => {
+                const isManage = modal.type === "manage_asset";
+                const isReturn = isManage ? modal.subTab === "return" : modal.type === "return_asset";
+                const selectedEmp = (db.emp_docs || []).find(e => e.id === modal.empId);
+                const empAllocatedAssets = (db.assets || []).filter(a => a.emp === selectedEmp?.name && a.status === "Allocated");
+                const allAllocatedAssets = (db.assets || []).filter(a => a.status === "Allocated");
+                const assetsToPick = empAllocatedAssets.length > 0 ? empAllocatedAssets : allAllocatedAssets;
+                const activeAsset = (db.assets || []).find(a => a.id === modal.assetId) || assetsToPick[0];
+
+                return (
+                  <>
+                    {/* Segmented Sub-Tab Switcher (when launched from Manage Assets) */}
+                    {isManage && (
+                      <div style={{ display: "flex", gap: 6, marginBottom: 14, background: "rgba(0,0,0,0.3)", padding: 4, borderRadius: 5, border: "1px solid rgba(255,255,255,0.08)" }}>
+                        <button type="button" onClick={() => setModal(m => ({ ...m, subTab: "allocate" }))}
+                          className="mono"
+                          style={{
+                            flex: 1, padding: "7px 0", textAlign: "center", borderRadius: 3, cursor: "pointer", fontSize: 11, fontWeight: !isReturn ? 700 : 500,
+                            border: !isReturn ? "1px solid #F2946B" : "1px solid transparent",
+                            background: !isReturn ? "rgba(242,148,107,0.2)" : "transparent",
+                            color: !isReturn ? "#F2946B" : "#7C93AA"
+                          }}>
+                          📦 Allocate Hardware
+                        </button>
+                        <button type="button" onClick={() => {
+                          const targetAsset = empAllocatedAssets[0] || allAllocatedAssets[0];
+                          setModal(m => ({ ...m, subTab: "return", assetId: targetAsset ? targetAsset.id : m.assetId }));
+                        }}
+                          className="mono"
+                          style={{
+                            flex: 1, padding: "7px 0", textAlign: "center", borderRadius: 3, cursor: "pointer", fontSize: 11, fontWeight: isReturn ? 700 : 500,
+                            border: isReturn ? "1px solid #F2946B" : "1px solid transparent",
+                            background: isReturn ? "rgba(242,148,107,0.2)" : "transparent",
+                            color: isReturn ? "#F2946B" : "#7C93AA"
+                          }}>
+                          ↩️ Return Equipment
+                        </button>
+                      </div>
+                    )}
+
+                    {!isReturn ? (
+                      <>
+                        <div className="mono" style={LBL}>ASSET TYPE</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6, marginBottom: 14 }}>
+                          {["Laptop", "Mobile Phone", "Monitor", "Ergonomic Chair", "Access Card", "Headset", "Keyboard", "Webcam"].map(a => (
+                            <div key={a} onClick={() => setModal(m => ({ ...m, assetType: a }))}
+                              style={{
+                                padding: "8px 10px", borderRadius: 3, cursor: "pointer", fontSize: 11,
+                                border: modal.assetType === a ? `1px solid ${meta.accent}` : "1px solid rgba(255,255,255,0.08)",
+                                background: modal.assetType === a ? `${meta.accent}22` : "transparent",
+                                color: modal.assetType === a ? meta.accent : "#7C93AA"
+                              }} className="mono">{a}</div>
+                          ))}
+                        </div>
+                        <div className="mono" style={{ fontSize: 10, color: "#7C93AA", marginBottom: 14 }}>
+                          Generates asset code and logs custody to digital inventory.
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="mono" style={LBL}>SELECT ASSET TO RETURN</div>
+                        {assetsToPick.length === 0 ? (
+                          <div className="mono" style={{ fontSize: 11, color: "#F26B6B", padding: "10px", background: "rgba(242,107,107,0.1)", borderRadius: 3, marginBottom: 14 }}>
+                            ⚠️ No allocated assets found for {selectedEmp?.name || "this employee"}.
+                          </div>
+                        ) : (
+                          <select
+                            value={modal.assetId || assetsToPick[0]?.id}
+                            onChange={e => setModal(m => ({ ...m, assetId: e.target.value }))}
+                            className="mono"
+                            style={SEL}
+                          >
+                            {assetsToPick.map(a => (
+                              <option key={a.id} value={a.id}>
+                                {a.asset} — {a.code || a.id} (Held by {a.emp})
+                              </option>
+                            ))}
+                          </select>
+                        )}
+
+                        <div className="mono" style={LBL}>RETURN REASON / CONDITION</div>
+                        <select
+                          value={modal.reason || "Hardware Refresh / Upgrade"}
+                          onChange={e => setModal(m => ({ ...m, reason: e.target.value }))}
+                          className="mono"
+                          style={SEL}
+                        >
+                          <option value="Hardware Refresh / Upgrade">Hardware Refresh / Upgrade</option>
+                          <option value="Normal Project Return">Normal Project Return</option>
+                          <option value="Damaged / Maintenance Required">Damaged / Maintenance Required</option>
+                          <option value="Surplus Equipment Return">Surplus Equipment Return</option>
+                        </select>
+
+                        {activeAsset && (
+                          <div className="mono" style={{ fontSize: 10.5, color: "#7C93AA", background: "rgba(242,148,107,0.08)", border: "1px solid rgba(242,148,107,0.25)", padding: "8px 10px", borderRadius: 3, marginBottom: 14 }}>
+                            📦 Returning <strong style={{ color: "#F2946B" }}>{activeAsset.asset}</strong> ({activeAsset.code || activeAsset.id}) will release this equipment back into inventory and clear the custodian record.
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                );
+              })()}
 
               {/* ── Loan fields ── */}
               {modal.type === "loan" && (() => {
@@ -1685,63 +4690,1589 @@ export default function ModuleSimulation() {
                 <select value={modal.allowanceType} onChange={e => setModal(m => ({ ...m, allowanceType: e.target.value }))} className="mono" style={SEL}>
                   {["LTA (Leave Travel Allowance)", "SCA (School/Children Allowance)", "Meal Allowance", "Transport Allowance", "Medical Reimbursement", "Uniform Allowance", "Internet Allowance"].map(t => <option key={t}>{t}</option>)}
                 </select>
-                <div className="mono" style={LBL}>AMOUNT (Rs.)</div>
+
+                {/* Option 1: Infinite Fiscal Year Stepper */}
+                <div className="mono" style={LBL}>FISCAL YEAR / PERIOD</div>
+                <div style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+                  marginBottom: 14, background: "rgba(0,0,0,0.3)", padding: "7px 10px",
+                  borderRadius: 4, border: "1px solid rgba(255,255,255,0.08)"
+                }}>
+                  <button type="button" onClick={() => setModal(m => ({ ...m, fiscalYear: (m.fiscalYear || 2026) - 1 }))}
+                    className="mono"
+                    style={{
+                      padding: "4px 10px", fontSize: 11, background: "rgba(255,255,255,0.05)",
+                      border: "1px solid rgba(255,255,255,0.15)", borderRadius: 3, color: "#DCE6F2", cursor: "pointer"
+                    }}>
+                    ◀ Prev FY
+                  </button>
+                  <div style={{ textAlign: "center" }}>
+                    <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: meta.accent, letterSpacing: "0.04em" }}>
+                      FY{(modal.fiscalYear || 2026)}–{String((modal.fiscalYear || 2026) + 1).slice(2)}
+                    </span>
+                    <span style={{ fontSize: 9.5, color: "#5C7891", marginLeft: 6 }}>
+                      (Apr {(modal.fiscalYear || 2026)} – Mar {(modal.fiscalYear || 2026) + 1})
+                    </span>
+                  </div>
+                  <button type="button" onClick={() => setModal(m => ({ ...m, fiscalYear: (m.fiscalYear || 2026) + 1 }))}
+                    className="mono"
+                    style={{
+                      padding: "4px 10px", fontSize: 11, background: "rgba(255,255,255,0.05)",
+                      border: "1px solid rgba(255,255,255,0.15)", borderRadius: 3, color: "#DCE6F2", cursor: "pointer"
+                    }}>
+                    Next FY ▶
+                  </button>
+                </div>
+
+                <div className="mono" style={LBL}>DISBURSEMENT AMOUNT (Rs.)</div>
                 <input type="number" min={500} max={100000} step={500} value={modal.amount}
                   onChange={e => setModal(m => ({ ...m, amount: Number(e.target.value) }))} className="mono" style={INP} />
-                <div style={{ padding: "8px 12px", background: "rgba(242,107,138,0.06)", border: "1px solid rgba(242,107,138,0.2)", borderRadius: 3, marginBottom: 14 }}>
-                  <span className="mono" style={{ fontSize: 10, color: "#5C7891" }}>ANNUAL EQUIVALENT  </span>
-                  <span className="mono" style={{ fontSize: 13, color: meta.accent, fontWeight: 700 }}>Rs.{(modal.amount * 12).toLocaleString("en-IN")}</span>
+                <div className="mono" style={{ fontSize: 10, color: "#5C7891", marginBottom: 14, background: "rgba(242,107,138,0.06)", border: "1px solid rgba(242,107,138,0.15)", borderRadius: 3, padding: "7px 10px" }}>
+                  💡 One-time / annual lump-sum allowance for FY{(modal.fiscalYear || 2026)}–{String((modal.fiscalYear || 2026) + 1).slice(2)}. Total entered amount (₹{Number(modal.amount || 0).toLocaleString("en-IN")}) will be credited directly to employee's gross pay in the next payroll run.
                 </div>
               </>}
 
-              {/* ── Transfer fields ── */}
-              {modal.type === "transfer" && <>
-                <div className="mono" style={LBL}>NEW DEPARTMENT</div>
-                <select className="mono" style={SEL} value={modal.newDept} onChange={e => setModal(m => ({ ...m, newDept: e.target.value }))}>
-                  {DEPT_POOL.map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
-                <div className="mono" style={{ fontSize: 10, color: "#4A6070", marginBottom: 14 }}>
-                  This will instantly update the employee's master record.
-                </div>
-              </>}
+              {/* ── Internal Talent Mobility & Career (Promotion & Transfer) ── */}
+              {(modal.type === "mobility" || modal.type === "promote" || modal.type === "transfer") && (() => {
+                const isMobility = modal.type === "mobility";
+                const isTransfer = isMobility ? modal.subTab === "transfer" : modal.type === "transfer";
+                const emp = (db.emp_docs || []).find(e => e.id === modal.empId);
 
-              {/* ── Promote fields ── */}
-              {modal.type === "promote" && <>
-                <div className="mono" style={LBL}>NEW DESIGNATION</div>
-                <select className="mono" style={SEL} value={modal.newDesig} onChange={e => setModal(m => ({ ...m, newDesig: e.target.value }))}>
-                  {DESIG_POOL.map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
-                <div className="mono" style={{ fontSize: 10, color: "#4A6070", marginBottom: 14 }}>
-                  Promotions are logged to performance history and immediately mutate the employee master record.
-                </div>
-              </>}
+                return (
+                  <>
+                    {/* Segmented Sub-Tab Switcher (when launched from Internal Mobility) */}
+                    {isMobility && (
+                      <div style={{ display: "flex", gap: 6, marginBottom: 14, background: "rgba(0,0,0,0.3)", padding: 4, borderRadius: 5, border: "1px solid rgba(255,255,255,0.08)" }}>
+                        <button type="button" onClick={() => setModal(m => ({ ...m, subTab: "promote" }))}
+                          className="mono"
+                          style={{
+                            flex: 1, padding: "7px 0", textAlign: "center", borderRadius: 3, cursor: "pointer", fontSize: 11, fontWeight: !isTransfer ? 700 : 500,
+                            border: !isTransfer ? "1px solid #6EE7B7" : "1px solid transparent",
+                            background: !isTransfer ? "rgba(110,231,183,0.18)" : "transparent",
+                            color: !isTransfer ? "#6EE7B7" : "#7C93AA"
+                          }}>
+                          ⭐ Promotion & Wage Revision
+                        </button>
+                        <button type="button" onClick={() => setModal(m => ({ ...m, subTab: "transfer" }))}
+                          className="mono"
+                          style={{
+                            flex: 1, padding: "7px 0", textAlign: "center", borderRadius: 3, cursor: "pointer", fontSize: 11, fontWeight: isTransfer ? 700 : 500,
+                            border: isTransfer ? "1px solid #6EE7B7" : "1px solid transparent",
+                            background: isTransfer ? "rgba(110,231,183,0.18)" : "transparent",
+                            color: isTransfer ? "#6EE7B7" : "#7C93AA"
+                          }}>
+                          🔄 Departmental Transfer
+                        </button>
+                      </div>
+                    )}
+
+                    {isTransfer ? (
+                      /* ── Departmental Transfer Section with Handover Card ── */
+                      (() => {
+                        const curDept = emp?.dept || "—";
+                        const targetDept = modal.newDept;
+                        const isSameDept = curDept === targetDept;
+                        const assignedAssets = (db.assets || []).filter(a =>
+                          a.emp?.trim().toLowerCase() === emp?.name?.trim().toLowerCase() &&
+                          (!a.status?.includes("Returned") && !a.status?.includes("Recovered"))
+                        );
+                        const dailyWage = emp?.dailyRate || (DESIGNATION_RATES[emp?.designation] || 1000);
+                        const monthlySalary = dailyWage * 30;
+
+                        return (
+                          <>
+                            <div className="mono" style={LBL}>CURRENT DEPARTMENT</div>
+                            <input type="text" readOnly value={curDept} className="mono" style={{ ...INP, background: "rgba(255,255,255,0.03)", color: "#7C93AA" }} />
+
+                            <div className="mono" style={LBL}>TARGET DESTINATION DEPARTMENT</div>
+                            <select className="mono" style={SEL} value={modal.newDept} onChange={e => setModal(m => ({ ...m, newDept: e.target.value }))}>
+                              {DEPT_POOL.map(d => <option key={d} value={d}>{d}</option>)}
+                            </select>
+
+                            <div className="mono" style={LBL}>TRANSFER REASON / MANDATE</div>
+                            <select className="mono" style={SEL} value={modal.transferReason || "Project Reallocation"} onChange={e => setModal(m => ({ ...m, transferReason: e.target.value }))}>
+                              {["Project Reallocation", "Career Development & Rotation", "Strategic Department Restructure", "Employee Requested Relocation", "Inter-Division Promotion Support"].map(r => (
+                                <option key={r} value={r}>{r}</option>
+                              ))}
+                            </select>
+
+                            <div className="mono" style={LBL}>EFFECTIVE HANDOVER DATE</div>
+                            <input type="date" value={modal.transferEffectiveDate || getLocalDateStr()} onChange={e => setModal(m => ({ ...m, transferEffectiveDate: e.target.value }))} className="mono" style={INP} />
+
+                            {/* Organizational Mobility & Handover Card */}
+                            <div style={{
+                              marginTop: 6,
+                              marginBottom: 14,
+                              padding: "10px 12px",
+                              borderRadius: 4,
+                              background: !isSameDept ? "rgba(110,231,183,0.08)" : "rgba(242,107,107,0.08)",
+                              border: !isSameDept ? "1px solid rgba(110,231,183,0.3)" : "1px solid rgba(242,107,107,0.35)"
+                            }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                                <span className="mono" style={{ fontSize: 10, fontWeight: 700, color: !isSameDept ? "#6EE7B7" : "#F26B6B", textTransform: "uppercase" }}>
+                                  {!isSameDept ? "🌐 Cross-Functional Mobility & Handover Card" : "⚠️ Same Department Selected"}
+                                </span>
+                                {!isSameDept && (
+                                  <span className="mono" style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 10, background: "rgba(110,231,183,0.18)", color: "#6EE7B7", fontWeight: 700 }}>
+                                    4-Node Causal Graph
+                                  </span>
+                                )}
+                              </div>
+
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 11, marginBottom: 8 }}>
+                                <div style={{ background: "rgba(0,0,0,0.25)", padding: "6px 8px", borderRadius: 3 }}>
+                                  <div className="mono" style={{ fontSize: 9, color: "#5C7891" }}>CURRENT DEPT / COST CENTER</div>
+                                  <div className="mono" style={{ color: "#DCE6F2", fontWeight: 600 }}>{curDept}</div>
+                                </div>
+                                <div style={{ background: "rgba(0,0,0,0.25)", padding: "6px 8px", borderRadius: 3 }}>
+                                  <div className="mono" style={{ fontSize: 9, color: "#5C7891" }}>DESTINATION DEPT / COST CENTER</div>
+                                  <div className="mono" style={{ color: !isSameDept ? "#6EE7B7" : "#F26B6B", fontWeight: 600 }}>{targetDept}</div>
+                                </div>
+                              </div>
+
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 11, marginBottom: 6 }}>
+                                <div>
+                                  <span className="mono" style={{ fontSize: 9, color: "#5C7891" }}>PAYROLL REALLOCATION: </span>
+                                  <span className="mono" style={{ color: "#8CE99A", fontWeight: 600 }}>₹{Number(monthlySalary).toLocaleString("en-IN")}/mo</span>
+                                </div>
+                                <div>
+                                  <span className="mono" style={{ fontSize: 9, color: "#5C7891" }}>ASSETS IN TRANSIT: </span>
+                                  <span className="mono" style={{ color: assignedAssets.length ? "#F2B84B" : "#7C93AA", fontWeight: 600 }}>
+                                    {assignedAssets.length} Device{assignedAssets.length === 1 ? "" : "s"}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {assignedAssets.length > 0 && (
+                                <div className="mono" style={{ fontSize: 9.5, color: "#9FB4C8", background: "rgba(242,184,75,0.08)", border: "1px solid rgba(242,184,75,0.2)", padding: "5px 8px", borderRadius: 3, marginTop: 4 }}>
+                                  📦 Custodian Assets ({assignedAssets.map(a => a.asset).join(", ")}) will be tagged with new department code.
+                                </div>
+                              )}
+
+                              <div className="mono" style={{ fontSize: 9.5, color: "#6A859E", marginTop: 7, lineHeight: 1.4 }}>
+                                ⚡ Cascade: Updates <strong>emp_docs</strong> → Shifts <strong>payroll</strong> budget → Reallocates <strong>assets</strong> → Reassigns <strong>attendance_leave</strong> roster.
+                              </div>
+                            </div>
+                          </>
+                        );
+                      })()
+                    ) : (
+                      /* ── Promotion & Compensation Revision Section ── */
+                      (() => {
+                        const perfRecords = (db.performance || []).filter(r => r.emp === emp?.name);
+                        const latest = perfRecords.length ? perfRecords[perfRecords.length - 1] : null;
+                        const isCleared = perfRecords.length > 0 && latest?.rating !== "Needs Improvement" && latest?.rating !== "Unsatisfactory";
+
+                        return (
+                          <>
+                            {/* Appraisal verification badge */}
+                            <div style={{
+                              display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", marginBottom: 14,
+                              background: isCleared ? "rgba(140,233,154,0.08)" : "rgba(242,107,107,0.1)",
+                              border: isCleared ? "1px solid rgba(140,233,154,0.3)" : "1px solid rgba(242,107,107,0.35)",
+                              borderRadius: 3
+                            }}>
+                              <span style={{ fontSize: 13 }}>{isCleared ? "✅" : "⚠️"}</span>
+                              <div style={{ fontSize: 11 }}>
+                                {isCleared ? (
+                                  <>
+                                    <span style={{ color: "#8CE99A", fontWeight: 600 }}>Appraisal Verified: </span>
+                                    <span style={{ color: "#DCE6F2" }}>{latest.cycle} — {latest.rating} ({latest.kpiScore || "—"} KPI)</span>
+                                  </>
+                                ) : perfRecords.length === 0 ? (
+                                  <span style={{ color: "#F26B6B", fontWeight: 600 }}>
+                                    No appraisal on file — Corporate policy requires at least 1 completed appraisal cycle before promotion.
+                                  </span>
+                                ) : (
+                                  <span style={{ color: "#F26B6B", fontWeight: 600 }}>
+                                    Promotion Ineligible — Latest appraisal rating "{latest.rating}" does not meet promotion criteria.
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="mono" style={LBL}>CURRENT DESIGNATION</div>
+                            <input type="text" readOnly value={emp?.designation || "—"} className="mono" style={{ ...INP, background: "rgba(255,255,255,0.03)", color: "#7C93AA" }} />
+
+                            <div className="mono" style={LBL}>NEW DESIGNATION</div>
+                            <select className="mono" style={SEL} value={modal.newDesig} onChange={e => setModal(m => ({ ...m, newDesig: e.target.value }))}>
+                              {DESIG_POOL.map(d => <option key={d} value={d}>{d}</option>)}
+                            </select>
+
+                            {/* S.4: Live Compensation Delta & Wage Bump Card */}
+                            {(() => {
+                              const curRank = DESIG_POOL.indexOf(emp?.designation);
+                              const newRank = DESIG_POOL.indexOf(modal.newDesig);
+                              const curRate = DESIGNATION_RATES[emp?.designation] || 1000;
+                              const targetRate = DESIGNATION_RATES[modal.newDesig] || 1000;
+                              const wageDelta = targetRate - curRate;
+                              const wagePct = curRate > 0 ? Math.round((wageDelta / curRate) * 100) : 0;
+                              const isPromotion = newRank > curRank;
+                              const fmt = (n) => Number(n).toLocaleString("en-IN");
+
+                              return (
+                                <div style={{
+                                  marginTop: 8,
+                                  marginBottom: 14,
+                                  padding: "10px 12px",
+                                  borderRadius: 4,
+                                  background: isPromotion ? "rgba(140,233,154,0.08)" : (modal.newDesig === emp?.designation ? "rgba(255,255,255,0.03)" : "rgba(242,107,107,0.08)"),
+                                  border: isPromotion ? "1px solid rgba(140,233,154,0.3)" : (modal.newDesig === emp?.designation ? "1px solid rgba(255,255,255,0.1)" : "1px solid rgba(242,107,107,0.35)")
+                                }}>
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
+                                    <span className="mono" style={{ fontSize: 10, fontWeight: 700, color: isPromotion ? "#8CE99A" : (modal.newDesig === emp?.designation ? "#7C93AA" : "#F26B6B"), textTransform: "uppercase" }}>
+                                      {isPromotion ? "📈 Compensation Delta & Wage Bump (S.4)" : (modal.newDesig === emp?.designation ? "ℹ️ Same Rank Selected" : "⚠️ Lateral / Demotion Not Permitted")}
+                                    </span>
+                                    {isPromotion && (
+                                      <span className="mono" style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, background: "rgba(140,233,154,0.18)", color: "#8CE99A", fontWeight: 700 }}>
+                                        +{wagePct}% Wage Hike
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, fontSize: 11 }}>
+                                    <div>
+                                      <div className="mono" style={{ fontSize: 9, color: "#5C7891" }}>CURRENT RATE</div>
+                                      <div className="mono" style={{ color: "#DCE6F2", fontWeight: 600 }}>₹{fmt(curRate)}/d</div>
+                                      <div className="mono" style={{ fontSize: 9.5, color: "#5C7891" }}>₹{fmt(curRate * 30)}/mo</div>
+                                    </div>
+                                    <div>
+                                      <div className="mono" style={{ fontSize: 9, color: "#5C7891" }}>REVISED RATE</div>
+                                      <div className="mono" style={{ color: isPromotion ? "#8CE99A" : (modal.newDesig === emp?.designation ? "#DCE6F2" : "#F26B6B"), fontWeight: 600 }}>₹{fmt(targetRate)}/d</div>
+                                      <div className="mono" style={{ fontSize: 9.5, color: isPromotion ? "#8CE99A" : (modal.newDesig === emp?.designation ? "#5C7891" : "#F26B6B") }}>₹{fmt(targetRate * 30)}/mo</div>
+                                    </div>
+                                    <div>
+                                      <div className="mono" style={{ fontSize: 9, color: "#5C7891" }}>INCREMENT</div>
+                                      <div className="mono" style={{ color: isPromotion ? "#8CE99A" : (modal.newDesig === emp?.designation ? "#7C93AA" : "#F26B6B"), fontWeight: 700 }}>
+                                        {wageDelta > 0 ? `+₹${fmt(wageDelta)}/d` : (wageDelta === 0 ? "₹0" : `₹${fmt(wageDelta)}/d`)}
+                                      </div>
+                                      <div className="mono" style={{ fontSize: 9.5, color: isPromotion ? "#8CE99A" : (modal.newDesig === emp?.designation ? "#7C93AA" : "#F26B6B") }}>
+                                        {wageDelta > 0 ? `+₹${fmt(wageDelta * 30)}/mo` : (wageDelta === 0 ? "₹0/mo" : `₹${fmt(wageDelta * 30)}/mo`)}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                            <div className="mono" style={{ fontSize: 10, color: "#4A6070", marginBottom: 14 }}>
+                              Promotions are logged to performance history and immediately update designation and payroll grade scale.
+                            </div>
+                          </>
+                        );
+                      })()
+                    )}
+                  </>
+                );
+              })()}
 
               {/* ── ESS fields ── */}
-              {modal.type === "ess" && <>
-                <div className="mono" style={LBL}>REQUEST TYPE</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 6, marginBottom: 14 }}>
-                  {["Payslip Download", "Leave Balance Check", "Profile Update", "Document Request", "Attendance Correction", "IT Declaration Submission", "Reimbursement Claim"].map(r => (
-                    <div key={r} onClick={() => setModal(m => ({ ...m, req: r }))}
-                      style={{
-                        display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", borderRadius: 3, cursor: "pointer",
-                        border: modal.req === r ? `1px solid ${meta.accent}` : "1px solid rgba(255,255,255,0.07)",
-                        background: modal.req === r ? `${meta.accent}18` : "rgba(255,255,255,0.015)"
-                      }}>
-                      <span className="mono" style={{ fontSize: 11, color: modal.req === r ? meta.accent : "#9FB4C8" }}>{r}</span>
-                      {modal.req === r && <Check size={12} style={{ color: meta.accent, flexShrink: 0 }} />}
-                    </div>
-                  ))}
-                </div>
-              </>}
+              {modal.type === "ess" && (() => {
+                const emp = (db.emp_docs || []).find(e => e.id === modal.empId);
+                const ESS_SERVICES = [
+                  { id: "Payslip Download", title: "Payslip Download", desc: "Salary slip & tax statement", icon: FileText, color: "#8CE99A" },
+                  { id: "Leave Balance Check", title: "Leave Balance Check", desc: "Live 3-tier quota ledger", icon: Calendar, color: "#7DD3FC" },
+                  { id: "Attendance Correction", title: "Attendance Regularization", desc: "Missed punch / biometrics", icon: Clock, color: "#F2B84B" },
+                  { id: "Reimbursement Claim", title: "Reimbursement Claim", desc: "Travel & meal expense claim", icon: Receipt, color: "#F26B8A" },
+                  { id: "HR & IT Helpdesk", title: "HR & IT Helpdesk", desc: "Support ticket & grievance", icon: LifeBuoy, color: "#93C4D4" },
+                  { id: "Profile Update", title: "Profile Modification", desc: "Contact & address update", icon: UserCheck, color: "#4FD1C5" },
+                  { id: "Document Request", title: "HR Document Request", desc: "Bonafide or salary certificate", icon: FolderPlus, color: "#FFD166" },
+                ];
 
-              <button className="btn" disabled={!modal.empId} onClick={CONFIRM_FN[modal.type]}
+                return (
+                  <>
+                    <div className="mono" style={LBL}>SELECT ESS SERVICE</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7, marginTop: 6, marginBottom: 14 }}>
+                      {ESS_SERVICES.map((srv, idx) => {
+                        const isSel = modal.req === srv.id;
+                        const IconComp = srv.icon;
+                        return (
+                          <div key={srv.id} onClick={() => setModal(m => ({ ...m, req: srv.id }))}
+                            style={{
+                              display: "flex", alignItems: "flex-start", gap: 9, padding: "8px 10px", borderRadius: 4, cursor: "pointer",
+                              border: isSel ? "1px solid #D8A6F2" : "1px solid rgba(255,255,255,0.08)",
+                              background: isSel ? "rgba(216,166,242,0.14)" : "rgba(255,255,255,0.02)",
+                              gridColumn: idx === 6 ? "span 2" : "span 1",
+                              transition: "all 0.15s ease"
+                            }}>
+                            <div style={{
+                              width: 28, height: 28, borderRadius: 4, flexShrink: 0,
+                              background: isSel ? `${srv.color}25` : "rgba(255,255,255,0.05)",
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              color: isSel ? srv.color : "#7C93AA"
+                            }}>
+                              <IconComp size={15} />
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
+                                <span className="mono" style={{ fontSize: 11, fontWeight: isSel ? 700 : 600, color: isSel ? "#EDD4FA" : "#DCE6F2" }}>
+                                  {srv.title}
+                                </span>
+                                {isSel && <Check size={12} style={{ color: "#D8A6F2", flexShrink: 0 }} />}
+                              </div>
+                              <div className="mono" style={{ fontSize: 9.5, color: isSel ? "#C9A7E8" : "#6A859E", marginTop: 2, lineHeight: 1.3 }}>
+                                {srv.desc}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* ── Contextual Interactive Sub-Panel ── */}
+                    <div style={{
+                      background: "rgba(0,0,0,0.35)", border: "1px solid rgba(216,166,242,0.25)",
+                      borderRadius: 4, padding: "10px 12px", marginBottom: 14
+                    }}>
+                      {modal.req === "Payslip Download" && (() => {
+                        const pMonth = modal.payslipMonth || "Oct 2026";
+                        const pSlip = (db.payroll || []).find(p => p.emp === emp?.name && p.month === pMonth);
+                        const availableMonths = Array.from(new Set([
+                          "Oct 2026", "Sep 2026", "Aug 2026", "Jul 2026",
+                          ...(db.payroll || []).filter(p => p.emp === emp?.name).map(p => p.month)
+                        ]));
+                        return (
+                          <>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                              <span className="mono" style={{ fontSize: 10, color: "#8CE99A", letterSpacing: "0.08em" }}>SELECT PAYROLL MONTH</span>
+                              <span className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>🔒 256-BIT ENCRYPTED</span>
+                            </div>
+                            <select value={pMonth} onChange={e => setModal(m => ({ ...m, payslipMonth: e.target.value }))}
+                              className="mono" style={{ ...SEL, marginTop: 0, marginBottom: 8 }}>
+                              {availableMonths.map(m => <option key={m} value={m}>{m}</option>)}
+                            </select>
+                            {pSlip ? (
+                              <div className="mono" style={{ padding: "8px 10px", background: "rgba(140,233,154,0.08)", border: "1px solid rgba(140,233,154,0.3)", borderRadius: 3, fontSize: 11, color: "#8CE99A" }}>
+                                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                                  <span>Gross: {pSlip.gross}</span>
+                                  <span>PF: {pSlip.pf}</span>
+                                  <span style={{ fontWeight: 700, color: "#F4F7FB" }}>Net: {pSlip.net}</span>
+                                </div>
+                                <div style={{ fontSize: 9.5, color: "#7C93AA", marginTop: 4 }}>
+                                  Status: {pSlip.status} · Days Worked: {pSlip.daysWorked || "Full Month"}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="mono" style={{ fontSize: 10.5, color: "#9FB4C8", lineHeight: 1.4 }}>
+                                ℹ️ Direct download for <strong>{pMonth}</strong> will fetch a digitally certified PDF payslip once approved in payroll.
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
+
+                      {modal.req === "Leave Balance Check" && (() => {
+                        const a = emp ? getLeaveBalance(emp.name, "Annual Leave") : 12;
+                        const c = emp ? getLeaveBalance(emp.name, "Casual Leave") : 6;
+                        const s = emp ? getLeaveBalance(emp.name, "Sick Leave") : 6;
+                        return (
+                          <>
+                            <div className="mono" style={{ fontSize: 10, color: "#7DD3FC", letterSpacing: "0.08em", marginBottom: 8 }}>
+                              LIVE 3-TIER LEAVE QUOTA LEDGER ({emp?.name || "EMPLOYEE"})
+                            </div>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 6 }}>
+                              <div style={{ padding: "8px 4px", textAlign: "center", background: "rgba(125,211,252,0.08)", border: "1px solid rgba(125,211,252,0.25)", borderRadius: 3 }}>
+                                <div className="mono" style={{ fontSize: 9.5, color: "#7DD3FC" }}>🌴 ANNUAL</div>
+                                <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: "#F4F7FB", marginTop: 2 }}>{a.toFixed(1)}d</div>
+                              </div>
+                              <div style={{ padding: "8px 4px", textAlign: "center", background: "rgba(216,166,242,0.08)", border: "1px solid rgba(216,166,242,0.25)", borderRadius: 3 }}>
+                                <div className="mono" style={{ fontSize: 9.5, color: "#D8A6F2" }}>☕ CASUAL</div>
+                                <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: "#F4F7FB", marginTop: 2 }}>{c.toFixed(1)}d</div>
+                              </div>
+                              <div style={{ padding: "8px 4px", textAlign: "center", background: "rgba(242,107,138,0.08)", border: "1px solid rgba(242,107,138,0.25)", borderRadius: 3 }}>
+                                <div className="mono" style={{ fontSize: 9.5, color: "#F26B8A" }}>💊 SICK</div>
+                                <div className="mono" style={{ fontSize: 14, fontWeight: 700, color: "#F4F7FB", marginTop: 2 }}>{s.toFixed(1)}d</div>
+                              </div>
+                            </div>
+                            <div className="mono" style={{ fontSize: 9.5, color: "#6A859E" }}>
+                              ✅ Quota balances are synchronized in real-time with Attendance &amp; Leave module ledger.
+                            </div>
+                          </>
+                        );
+                      })()}
+
+                      {modal.req === "Attendance Correction" && (
+                        <>
+                          <div className="mono" style={{ fontSize: 10, color: "#F2B84B", letterSpacing: "0.08em", marginBottom: 6 }}>
+                            ATTENDANCE REGULARIZATION DETAILS
+                          </div>
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8 }}>
+                            <div>
+                              <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>MISSED PUNCH DATE</label>
+                              <input type="date" value={modal.corrDate || getLocalDateStr()}
+                                onChange={e => setModal(m => ({ ...m, corrDate: e.target.value }))}
+                                className="mono" style={{ ...INP, marginTop: 3, marginBottom: 0, colorScheme: "dark" }}
+                              />
+                            </div>
+                            <div>
+                              <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>SHIFT SESSION</label>
+                              <select value={modal.corrSession || "Morning Punch IN"}
+                                onChange={e => setModal(m => ({ ...m, corrSession: e.target.value }))}
+                                className="mono" style={{ ...SEL, marginTop: 3, marginBottom: 0 }}>
+                                <option value="Morning Punch IN">Morning Shift (Punch IN)</option>
+                                <option value="Evening Punch OUT">Evening Shift (Punch OUT)</option>
+                                <option value="Full Day Biometric Failure">Full Day Biometric Failure</option>
+                              </select>
+                            </div>
+                          </div>
+                          <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>JUSTIFICATION REASON</label>
+                          <select value={modal.corrReason || "Biometric Hardware Error"}
+                            onChange={e => setModal(m => ({ ...m, corrReason: e.target.value }))}
+                            className="mono" style={{ ...SEL, marginTop: 3, marginBottom: 0 }}>
+                            <option value="Biometric Hardware Error">Biometric Sensor Offline / Hardware Glitch</option>
+                            <option value="On-Duty Client Site Punch">Client Site Visit / Field Duty</option>
+                            <option value="Forgot to Punch In">Forgot to Punch (In Office Working)</option>
+                            <option value="Network / System Maintenance">Corporate Network Maintenance</option>
+                          </select>
+                        </>
+                      )}
+
+                      {modal.req === "Reimbursement Claim" && (
+                        <>
+                          <div className="mono" style={{ fontSize: 10, color: "#F26B8A", letterSpacing: "0.08em", marginBottom: 6 }}>
+                            EXPENSE REIMBURSEMENT DETAILS
+                          </div>
+                          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 6, marginBottom: 8 }}>
+                            <div>
+                              <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>EXPENSE CATEGORY</label>
+                              <select value={modal.claimCategory || "Local Conveyance / Travel"}
+                                onChange={e => setModal(m => ({ ...m, claimCategory: e.target.value }))}
+                                className="mono" style={{ ...SEL, marginTop: 3, marginBottom: 0 }}>
+                                <option value="Local Conveyance / Travel">Local Conveyance / Cab Fare</option>
+                                <option value="Client Lunch / Dining">Client Business Meal</option>
+                                <option value="Broadband / Internet Allowance">Broadband / Work From Home</option>
+                                <option value="Office Equipment / Peripherals">Hardware &amp; Office Supplies</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>CLAIM AMOUNT (₹)</label>
+                              <input type="number" min={100} max={50000} step={100}
+                                value={modal.claimAmount || 1200}
+                                onChange={e => setModal(m => ({ ...m, claimAmount: Number(e.target.value) }))}
+                                className="mono" style={{ ...INP, marginTop: 3, marginBottom: 0 }}
+                              />
+                            </div>
+                          </div>
+                          <div className="mono" style={{ fontSize: 9.5, color: "#8CE99A" }}>
+                            📎 Digital Tax Invoice attached · Routed to Finance for disbursement
+                          </div>
+                        </>
+                      )}
+
+                      {(modal.req === "HR & IT Helpdesk" || modal.req === "IT Declaration Submission") && (
+                        <>
+                          <div className="mono" style={{ fontSize: 10, color: "#93C4D4", letterSpacing: "0.08em", marginBottom: 6 }}>
+                            HR &amp; IT INTERNAL SUPPORT HELPDESK
+                          </div>
+                          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 8, marginBottom: 8 }}>
+                            <div>
+                              <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>TICKET CATEGORY</label>
+                              <select value={modal.ticketCategory || "IT Hardware & Equipment"}
+                                onChange={e => setModal(m => ({ ...m, ticketCategory: e.target.value }))}
+                                className="mono" style={{ ...SEL, marginTop: 3, marginBottom: 0 }}>
+                                <option value="IT Hardware & Equipment">IT Hardware &amp; Laptop Support</option>
+                                <option value="Payroll & Salary Slip Query">Payroll &amp; Salary Slip Query</option>
+                                <option value="Biometric Sensor & Access Card">Biometric Punch &amp; Access Card</option>
+                                <option value="Corporate HR Policy & Benefits">HR Policy &amp; Benefits Clarification</option>
+                                <option value="Workplace Facilities & Ergonomics">Facilities &amp; Ergonomic Furniture</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>PRIORITY LEVEL</label>
+                              <select value={modal.ticketPriority || "High"}
+                                onChange={e => setModal(m => ({ ...m, ticketPriority: e.target.value }))}
+                                className="mono" style={{ ...SEL, marginTop: 3, marginBottom: 0 }}>
+                                <option value="Low">Low (General Inquiry)</option>
+                                <option value="Medium">Medium (Standard Request)</option>
+                                <option value="High">High (Impacting Daily Work)</option>
+                                <option value="Critical">Critical (System Blocker)</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div style={{ marginBottom: 8 }}>
+                            <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>TICKET SUBJECT / SUMMARY</label>
+                            <input type="text"
+                              value={modal.ticketSubject !== undefined ? modal.ticketSubject : "Laptop Screen Flickering & Battery Glitch"}
+                              onChange={e => setModal(m => ({ ...m, ticketSubject: e.target.value }))}
+                              placeholder="e.g. Laptop Display Glitch or Salary Slip TDS Discrepancy"
+                              className="mono" style={{ ...INP, marginTop: 3, marginBottom: 0 }}
+                            />
+                          </div>
+                          <div style={{ marginBottom: 6 }}>
+                            <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>ISSUE DETAILS &amp; STEPS TO REPRODUCE</label>
+                            <textarea
+                              rows={2}
+                              value={modal.ticketDescription !== undefined ? modal.ticketDescription : "Display blanks out intermittently during client video calls and battery drains within 45 mins. Requesting hardware diagnostic inspection."}
+                              onChange={e => setModal(m => ({ ...m, ticketDescription: e.target.value }))}
+                              placeholder="Describe the issue, error codes, or support needed..."
+                              className="mono"
+                              style={{ ...INP, marginTop: 3, marginBottom: 0, resize: "vertical", minHeight: 46, paddingTop: 6, lineHeight: 1.35 }}
+                            />
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                            <span className="mono" style={{ fontSize: 9.5, color: "#93C4D4" }}>
+                              🎫 Auto-routed to HR &amp; IT Service Desk
+                            </span>
+                            <span className="mono" style={{ fontSize: 9.5, color: "#8CE99A" }}>
+                              SLA: 24hr Guaranteed Response
+                            </span>
+                          </div>
+                        </>
+                      )}
+
+                      {modal.req === "Profile Update" && (() => {
+                        const curField = modal.profileField || "Residential Address";
+                        const config = PROFILE_FIELD_CONFIG[curField] || PROFILE_FIELD_CONFIG["Residential Address"];
+                        const currentEmp = emp;
+                        const existingVal = currentEmp ? currentEmp[config.empKey] : null;
+
+                        return (
+                          <>
+                            <div className="mono" style={{ fontSize: 10, color: "#4FD1C5", letterSpacing: "0.08em", marginBottom: 6 }}>
+                              EMPLOYEE MASTER PROFILE UPDATE
+                            </div>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1.35fr", gap: 8, marginBottom: 8 }}>
+                              <div>
+                                <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>FIELD TO UPDATE</label>
+                                <select value={curField}
+                                  onChange={e => {
+                                    const nextField = e.target.value;
+                                    const nextCfg = PROFILE_FIELD_CONFIG[nextField] || PROFILE_FIELD_CONFIG["Residential Address"];
+                                    setModal(m => ({
+                                      ...m,
+                                      profileField: nextField,
+                                      profileValue: nextCfg.defaultVal
+                                    }));
+                                  }}
+                                  className="mono" style={{ ...SEL, marginTop: 3, marginBottom: 0 }}>
+                                  {Object.keys(PROFILE_FIELD_CONFIG).map(f => (
+                                    <option key={f} value={f}>{PROFILE_FIELD_CONFIG[f].label}</option>
+                                  ))}
+                                </select>
+                                <div className="mono" style={{ fontSize: 9, color: "#6A859E", marginTop: 4, lineHeight: 1.3 }}>
+                                  {config.hint}
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                  <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>NEW REQUESTED VALUE</label>
+                                  {existingVal && (
+                                    <span className="mono" style={{ fontSize: 9, color: "#7C93AA" }}>On File: {String(existingVal).slice(0, 16)}</span>
+                                  )}
+                                </div>
+                                {config.isTextarea ? (
+                                  <textarea
+                                    rows={2}
+                                    value={modal.profileValue !== undefined ? modal.profileValue : config.defaultVal}
+                                    onChange={e => setModal(m => ({ ...m, profileValue: e.target.value }))}
+                                    placeholder={config.placeholder}
+                                    className="mono"
+                                    style={{ ...INP, marginTop: 3, marginBottom: 0, resize: "vertical", minHeight: 46, paddingTop: 6, lineHeight: 1.35 }}
+                                  />
+                                ) : (
+                                  <input
+                                    type={curField === "Personal Phone" ? "tel" : curField === "Personal Email" ? "email" : "text"}
+                                    value={modal.profileValue !== undefined ? modal.profileValue : config.defaultVal}
+                                    onChange={e => setModal(m => ({ ...m, profileValue: e.target.value }))}
+                                    placeholder={config.placeholder}
+                                    className="mono"
+                                    style={{ ...INP, marginTop: 3, marginBottom: 0 }}
+                                  />
+                                )}
+                              </div>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                              <span className="mono" style={{ fontSize: 9.5, color: "#8CE99A" }}>
+                                {config.proofHint}
+                              </span>
+                              <span className="mono" style={{ fontSize: 9.5, color: "#4FD1C5" }}>
+                                ⚡ Routes to HR Approvals Center
+                              </span>
+                            </div>
+                          </>
+                        );
+                      })()}
+
+                      {modal.req === "Document Request" && (
+                        <>
+                          <div className="mono" style={{ fontSize: 10, color: "#FFD166", letterSpacing: "0.08em", marginBottom: 6 }}>
+                            OFFICIAL HR DOCUMENT &amp; CERTIFICATE REQUEST
+                          </div>
+                          <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>SELECT OR SPECIFY DOCUMENT TYPE</label>
+                          <select value={modal.docType || "Bonafide Certificate"}
+                            onChange={e => setModal(m => ({ ...m, docType: e.target.value }))}
+                            className="mono" style={{ ...SEL, marginTop: 3, marginBottom: 8 }}>
+                            <option value="Bonafide Certificate">Bonafide Certificate (Banking / Housing)</option>
+                            <option value="Employment Verification Letter">Employment Verification Letter (Visa / Embassy)</option>
+                            <option value="Salary Certificate">Official Annual Salary Certificate</option>
+                            <option value="No Objection Certificate (NOC)">No Objection Certificate (NOC for Travel / Passport)</option>
+                            <option value="Other (Custom Document / Letter)...">Other (Type Custom Document / Letter)...</option>
+                          </select>
+
+                          {modal.docType === "Other (Custom Document / Letter)..." && (
+                            <div style={{ marginTop: 2, marginBottom: 8 }}>
+                              <label className="mono" style={{ fontSize: 9.5, color: "#FFD166", letterSpacing: "0.06em" }}>
+                                ✍️ TYPE DOCUMENT NAME / CERTIFICATE TITLE *
+                              </label>
+                              <input type="text"
+                                value={modal.customDocTitle || ""}
+                                onChange={e => setModal(m => ({ ...m, customDocTitle: e.target.value }))}
+                                placeholder="e.g. Relieving Letter / Internship Certificate / Address Proof Affidavit"
+                                className="mono" style={{ ...INP, marginTop: 3, marginBottom: 8 }}
+                              />
+                            </div>
+                          )}
+
+                          <label className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>SUBMISSION PURPOSE / NOTES</label>
+                          <input type="text"
+                            value={modal.docPurpose || ""}
+                            onChange={e => setModal(m => ({ ...m, docPurpose: e.target.value }))}
+                            placeholder="e.g. Required for Higher Education Visa / Bank Loan Verification"
+                            className="mono" style={{ ...INP, marginTop: 3, marginBottom: 8 }}
+                          />
+
+                          <div className="mono" style={{ fontSize: 9.5, color: "#8CE99A" }}>
+                            ⚡ Routed to HR Approvals Center: Authorized digital document with official QR code and seal will be issued upon HR approval.
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
+
+              {/* ── Payroll Cycle fields ── */}
+              {modal.type === "payroll_cycle" && (() => {
+                const activeEmps = (db.emp_docs || []).filter(e => !e.status.includes("Inactive"));
+                const ALL_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+                const parts = (modal.month || "Oct 2026").trim().split(" ");
+                const currentMonthName = ALL_MONTHS.includes(parts[0]) ? parts[0] : "Oct";
+                const parsedYear = parseInt(parts[1], 10);
+                const currentYear = !isNaN(parsedYear) ? parsedYear : (modal.selectedYear || 2026);
+                const currentDaysInMonth = getDaysInMonth(currentYear, currentMonthName);
+                const isLeap = currentMonthName === "Feb" && currentDaysInMonth === 29;
+
+                const handleYearChange = (y) => {
+                  setModal(prev => ({ ...prev, selectedYear: y, month: `${currentMonthName} ${y}` }));
+                };
+
+                const handleAdvanceMonth = () => {
+                  const idx = ALL_MONTHS.indexOf(currentMonthName);
+                  let nextIdx = idx + 1;
+                  let nextYear = currentYear;
+                  if (nextIdx > 11) {
+                    nextIdx = 0;
+                    nextYear += 1;
+                  }
+                  const nextM = ALL_MONTHS[nextIdx];
+                  setModal(prev => ({ ...prev, selectedYear: nextYear, month: `${nextM} ${nextYear}` }));
+                };
+
+                return (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, padding: "8px 12px", background: "rgba(140,233,154,0.08)", border: "1px solid rgba(140,233,154,0.3)", borderRadius: 4 }}>
+                      <span className="mono" style={{ fontSize: 10.5, color: "#8CE99A" }}>🏢 ACTIVE PAYROLL COVERAGE:</span>
+                      <span className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: "#F4F7FB" }}>
+                        {activeEmps.length} Employees Scheduled
+                      </span>
+                    </div>
+
+                    <div style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                      marginBottom: 12, padding: "8px 12px",
+                      background: isLeap ? "rgba(255,209,102,0.12)" : "rgba(140,233,154,0.08)",
+                      border: `1px solid ${isLeap ? "rgba(255,209,102,0.4)" : "rgba(140,233,154,0.3)"}`,
+                      borderRadius: 4
+                    }}>
+                      <span className="mono" style={{ fontSize: 10.5, color: isLeap ? "#FFD166" : "#8CE99A" }}>
+                        {isLeap ? "⭐ LEAP YEAR CALENDAR CYCLE:" : "📅 CALENDAR DAYS IN CYCLE:"}
+                      </span>
+                      <span className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: isLeap ? "#FFD166" : "#8CE99A" }}>
+                        {currentMonthName} {currentYear} ({currentDaysInMonth} Days)
+                      </span>
+                    </div>
+
+                    {/* Year Selector & Quick Advance Bar */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                      <div className="mono" style={LBL}>SELECT PAYROLL MONTH &amp; YEAR</div>
+                      <button type="button" onClick={handleAdvanceMonth}
+                        className="mono"
+                        style={{
+                          fontSize: 10, padding: "3px 8px", background: "rgba(140,233,154,0.15)", border: "1px solid rgba(140,233,154,0.35)",
+                          color: "#8CE99A", borderRadius: 3, cursor: "pointer", display: "flex", alignItems: "center", gap: 4
+                        }}>
+                        ⏩ +1 Month ({ALL_MONTHS[(ALL_MONTHS.indexOf(currentMonthName) + 1) % 12]})
+                      </button>
+                    </div>
+
+                    {/* Year Stepper */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10, background: "rgba(0,0,0,0.3)", padding: "6px 10px", borderRadius: 4, border: "1px solid rgba(255,255,255,0.08)" }}>
+                      <button type="button" onClick={() => handleYearChange(currentYear - 1)}
+                        className="mono"
+                        style={{ padding: "4px 10px", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", color: "#DCE6F2", borderRadius: 3, cursor: "pointer", fontSize: 11 }}>
+                        ◀ Prev
+                      </button>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span className="mono" style={{ fontSize: 11, color: "#7C93AA" }}>YEAR:</span>
+                        <select value={currentYear} onChange={e => handleYearChange(parseInt(e.target.value, 10))}
+                          className="mono"
+                          style={{ background: "#0A0F1A", color: "#8CE99A", border: "1px solid rgba(140,233,154,0.35)", borderRadius: 3, padding: "4px 8px", fontSize: 13, fontWeight: 700 }}>
+                          {[2024, 2025, 2026, 2027, 2028, 2029, 2030, 2031, 2032].map(y => (
+                            <option key={y} value={y}>{y}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <button type="button" onClick={() => handleYearChange(currentYear + 1)}
+                        className="mono"
+                        style={{ padding: "4px 10px", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", color: "#DCE6F2", borderRadius: 3, cursor: "pointer", fontSize: 11 }}>
+                        Next ▶
+                      </button>
+                    </div>
+
+                    {/* 12-Month Calendar Grid */}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 14 }}>
+                      {ALL_MONTHS.map((m) => {
+                        const isSel = currentMonthName === m && currentYear === (parsedYear || currentYear);
+                        const mDays = getDaysInMonth(currentYear, m);
+                        return (
+                          <div key={m} onClick={() => setModal(prev => ({ ...prev, month: `${m} ${currentYear}` }))}
+                            style={{
+                              padding: "7px 4px", borderRadius: 3, cursor: "pointer", textAlign: "center", fontSize: 11.5,
+                              border: isSel ? "1px solid #8CE99A" : "1px solid rgba(255,255,255,0.08)",
+                              background: isSel ? "rgba(140,233,154,0.2)" : "rgba(255,255,255,0.02)",
+                              color: isSel ? "#8CE99A" : "#9FB4C8",
+                              fontWeight: isSel ? 700 : 500
+                            }} className="mono">
+                            <div>{m}</div>
+                            <div style={{ fontSize: 9.5, opacity: 0.75, marginTop: 1 }}>{mDays}d</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="mono" style={LBL}>TARGET CYCLE LABEL</div>
+                    <input type="text" value={modal.month} onChange={e => setModal(prev => ({ ...prev, month: e.target.value }))}
+                      placeholder="e.g. Oct 2026 or Q4-2026"
+                      className="mono" style={INP}
+                    />
+
+                    <div className="mono" style={LBL}>ATTENDANCE CALCULATION MODE</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 5, marginBottom: 10 }}>
+                      <div onClick={() => setModal(prev => ({ ...prev, mode: "standard" }))}
+                        style={{
+                          padding: "8px 8px", borderRadius: 3, cursor: "pointer", textAlign: "center", fontSize: 11,
+                          border: modal.mode === "standard" ? "1px solid #8CE99A" : "1px solid rgba(255,255,255,0.08)",
+                          background: modal.mode === "standard" ? "rgba(140,233,154,0.18)" : "transparent",
+                          color: modal.mode === "standard" ? "#8CE99A" : "#7C93AA"
+                        }} className="mono">
+                        ⚡ Standard ({currentDaysInMonth} Days)
+                      </div>
+                      <div onClick={() => setModal(prev => ({ ...prev, mode: "attendance" }))}
+                        style={{
+                          padding: "8px 8px", borderRadius: 3, cursor: "pointer", textAlign: "center", fontSize: 11,
+                          border: modal.mode === "attendance" ? "1px solid #8CE99A" : "1px solid rgba(255,255,255,0.08)",
+                          background: modal.mode === "attendance" ? "rgba(140,233,154,0.18)" : "transparent",
+                          color: modal.mode === "attendance" ? "#8CE99A" : "#7C93AA"
+                        }} className="mono">
+                        🔍 Strict Attendance (Max {currentDaysInMonth}d)
+                      </div>
+                    </div>
+
+                    <div className="mono" style={{ fontSize: 10, color: "#6A859E", marginBottom: 14, background: "rgba(0,0,0,0.25)", padding: "7px 10px", borderRadius: 3, lineHeight: 1.4 }}>
+                      {modal.mode === "standard"
+                        ? `💡 Standard Mode: Simulates full monthly salary based on ${currentDaysInMonth} calendar days for ${modal.month || "the selected cycle"} (minus unpaid leaves).`
+                        : `💡 Strict Mode: Aggregates only physical punches and approved leaves specifically dated in ${modal.month || "this month"} (capped at ${currentDaysInMonth} calendar days).`}
+                    </div>
+                  </>
+                );
+              })()}
+
+              <button className="btn"
+                disabled={
+                  (modal.type !== "payroll_cycle" && !modal.empId) ||
+                  ((modal.type === "return_asset" || (modal.type === "manage_asset" && modal.subTab === "return")) && !modal.assetId && !(db.assets || []).some(a => a.status === "Allocated")) ||
+                  ((modal.type === "promote" || (modal.type === "mobility" && modal.subTab !== "transfer")) && (() => {
+                    const emp = (db.emp_docs || []).find(e => e.id === modal.empId);
+                    const perf = (db.performance || []).filter(r => r.emp === emp?.name);
+                    if (!perf.length) return true;
+                    const l = perf[perf.length - 1];
+                    if (l?.rating === "Needs Improvement" || l?.rating === "Unsatisfactory") return true;
+                    const curRank = DESIG_POOL.indexOf(emp?.designation);
+                    const newRank = DESIG_POOL.indexOf(modal.newDesig);
+                    return newRank <= curRank;
+                  })()) ||
+                  ((modal.type === "transfer" || (modal.type === "mobility" && modal.subTab === "transfer")) && (() => {
+                    const emp = (db.emp_docs || []).find(e => e.id === modal.empId);
+                    return emp && modal.newDept === emp.dept;
+                  })())
+                }
+                onClick={CONFIRM_FN[modal.type]}
                 style={{ width: "100%", textAlign: "center", borderColor: meta.accent, color: "#F4F7FB", background: `${meta.accent}18`, fontWeight: 600 }}>
-                CONFIRM &amp; SUBMIT
+                {modal.type === "payroll_cycle"
+                  ? `PROCESS PAYROLL — ${(modal.month || "CYCLE").toUpperCase()}`
+                  : modal.type === "manage_asset"
+                    ? (modal.subTab === "return" ? "CONFIRM ASSET RETURN" : "ALLOCATE HARDWARE ASSET")
+                    : modal.type === "mobility"
+                      ? (modal.subTab === "transfer" ? "CONFIRM DEPARTMENT TRANSFER" : "CONFIRM PROMOTION & REVISE SCALE")
+                      : (modal.type === "ess" && (modal.req === "Reimbursement Claim" || modal.req === "Attendance Correction" || modal.req === "Document Request")
+                        ? "SUBMIT FOR HR APPROVAL"
+                        : modal.type === "return_asset"
+                          ? "CONFIRM ASSET RETURN"
+                          : modal.type === "promote"
+                            ? "CONFIRM PROMOTION & REVISE SCALE"
+                            : modal.type === "transfer"
+                              ? "CONFIRM DEPARTMENT TRANSFER"
+                              : modal.type === "offboard"
+                                ? (modal.separationMode === "notice"
+                                  ? "SCHEDULE RESIGNATION (START NOTICE PERIOD)"
+                                  : "EXECUTE FINAL CLEARANCE & F&F SETTLEMENT")
+                                : "CONFIRM & SUBMIT")}
               </button>
             </div>
           </div>
         );
       })()}
+
+      {/* ── HR Approval & Notification Center Modal ───────────────────────── */}
+      {showNotifications && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(4,8,14,0.82)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 75 }}>
+          <div style={{ width: 560, maxHeight: "88vh", overflowY: "auto", background: "#0D1420", border: "1px solid rgba(242,184,75,0.5)", borderRadius: 6, padding: 22 }} className="scrollbar-thin">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Bell size={18} color="#F2B84B" />
+                <span style={{ fontWeight: 700, fontSize: 16, color: "#F4F7FB" }}>HR Approval &amp; Notification Center</span>
+              </div>
+              <X size={16} style={{ cursor: "pointer", color: "#7C93AA" }} onClick={() => setShowNotifications(false)} />
+            </div>
+            <div className="mono" style={{ fontSize: 10.5, color: "#5C7891", marginBottom: 18 }}>
+              Review pending employee requests with automated balance deduction &amp; payroll synchronization.
+            </div>
+
+            {!networkOn && (
+              <div style={{
+                background: "rgba(242,107,107,0.14)",
+                border: "1px solid rgba(242,107,107,0.45)",
+                borderRadius: 4,
+                padding: "9px 12px",
+                marginBottom: 16,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                color: "#F26B6B"
+              }} className="mono">
+                <span style={{ fontSize: 13 }}>⚠️</span>
+                <span style={{ fontSize: 10.5, fontWeight: 600, lineHeight: 1.4 }}>
+                  SIMULATION NETWORK OFFLINE — Approvals and database synchronization are currently disabled. Please restore network connectivity in the top toolbar to process or reject requests.
+                </span>
+              </div>
+            )}
+
+            {/* Section 1: Leave Applications */}
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, paddingBottom: 4, borderBottom: "1px solid rgba(125,211,252,0.2)" }}>
+                <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "#7DD3FC", letterSpacing: "0.06em" }}>
+                  🏖️ LEAVE APPLICATIONS ({pendingLeaves.length})
+                </span>
+              </div>
+              {pendingLeaves.length === 0 ? (
+                <div className="mono" style={{ fontSize: 11, color: "#4A6070", padding: "10px", background: "rgba(255,255,255,0.02)", borderRadius: 3, textAlign: "center" }}>
+                  — No pending leave requests —
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {pendingLeaves.map((req) => {
+                    const emp = (db.emp_docs || []).find(e => e.name === req.emp);
+                    const isOnDuty = req.type && req.type.includes("On-Duty");
+                    const isMaternity = req.type && req.type.includes("Maternity");
+                    const isPaternity = req.type && req.type.includes("Paternity");
+                    const isCompOff = req.type && req.type.includes("Comp Off");
+                    const isSpecialLeave = isOnDuty || isMaternity || isPaternity || isCompOff;
+                    const reqDays = Number(req.days) || (req.isHalfDay ? 0.5 : 1);
+                    const curBal = !isSpecialLeave ? getLeaveBalance(req.emp, req.type) : null;
+                    const newBal = !isSpecialLeave ? Math.max(0, parseFloat((curBal - reqDays).toFixed(1))) : null;
+                    const travelAllowanceAmt = isOnDuty ? Math.round(reqDays * 1000) : 0;
+
+                    let badgeColor = "#F2B84B";
+                    let badgeBg = "rgba(242,184,75,0.15)";
+                    let badgeBorder = "rgba(242,184,75,0.3)";
+                    let badgeText = "Pending HR";
+                    let cardBorder = "rgba(125,211,252,0.25)";
+                    let cardBg = "rgba(125,211,252,0.04)";
+
+                    if (isOnDuty) {
+                      badgeColor = "#93C4D4"; badgeBg = "rgba(147,196,212,0.18)"; badgeBorder = "rgba(147,196,212,0.4)";
+                      badgeText = "✈️ On-Duty Trip"; cardBorder = "rgba(147,196,212,0.35)"; cardBg = "rgba(147,196,212,0.06)";
+                    } else if (isMaternity) {
+                      badgeColor = "#F26B8A"; badgeBg = "rgba(242,107,138,0.18)"; badgeBorder = "rgba(242,107,138,0.4)";
+                      badgeText = "👶 Statutory Maternity"; cardBorder = "rgba(242,107,138,0.35)"; cardBg = "rgba(242,107,138,0.06)";
+                    } else if (isPaternity) {
+                      badgeColor = "#6BC2F2"; badgeBg = "rgba(107,194,242,0.18)"; badgeBorder = "rgba(107,194,242,0.4)";
+                      badgeText = "🍼 Parental Paternity"; cardBorder = "rgba(107,194,242,0.35)"; cardBg = "rgba(107,194,242,0.06)";
+                    } else if (isCompOff) {
+                      badgeColor = "#F2B84B"; badgeBg = "rgba(242,184,75,0.18)"; badgeBorder = "rgba(242,184,75,0.4)";
+                      badgeText = "🔄 Compensatory Off"; cardBorder = "rgba(242,184,75,0.35)"; cardBg = "rgba(242,184,75,0.06)";
+                    }
+
+                    return (
+                      <div key={req.id} style={{ padding: 12, borderRadius: 4, background: cardBg, border: `1px solid ${cardBorder}`, display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "#F4F7FB" }}>{req.emp}</div>
+                            <div className="mono" style={{ fontSize: 10, color: "#7C93AA" }}>
+                              {emp?.dept || "Staff"} · {req.type} ({reqDays} day{reqDays !== 1 ? "s" : ""})
+                            </div>
+                          </div>
+                          <span className="mono" style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 10, background: badgeBg, color: badgeColor, border: `1px solid ${badgeBorder}` }}>
+                            {badgeText}
+                          </span>
+                        </div>
+                        <div className="mono" style={{ fontSize: 10.5, color: "#9FB4C8", background: "rgba(0,0,0,0.25)", padding: "6px 8px", borderRadius: 3 }}>
+                          Dates: <span style={{ color: "#DCE6F2" }}>{req.dates}</span>
+                          {isOnDuty && (
+                            <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>
+                              <div>Purpose: <span style={{ color: "#93C4D4" }}>{req.purpose || "Client Site Visit"}</span></div>
+                              <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 2 }}>
+                                <span>Leave Impact:</span>
+                                <span style={{ color: "#8CE99A", fontWeight: 600 }}>0 Leaves Deducted (100% Paid)</span>
+                              </div>
+                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                <span>Travel Allowance:</span>
+                                <span style={{ color: "#FFD166", fontWeight: 600 }}>+Rs.{travelAllowanceAmt.toLocaleString("en-IN")} (Auto-Credited)</span>
+                              </div>
+                            </div>
+                          )}
+                          {isMaternity && (
+                            <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>
+                              <div>Documentation: <span style={{ color: "#F26B8A" }}>{req.medicalCertDate || "Medical Cert #MC-9021 Verified"}</span></div>
+                              <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 2 }}>
+                                <span>Statutory Benefit:</span>
+                                <span style={{ color: "#8CE99A", fontWeight: 600 }}>0 Quota Deducted · 100% Fully Paid (84d max)</span>
+                              </div>
+                            </div>
+                          )}
+                          {isPaternity && (
+                            <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>
+                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                <span>Parental Policy:</span>
+                                <span style={{ color: "#8CE99A", fontWeight: 600 }}>0 Quota Deducted · 100% Fully Paid (10d max)</span>
+                              </div>
+                            </div>
+                          )}
+                          {isCompOff && (
+                            <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>
+                              <div>Shift Worked: <span style={{ color: "#F2B84B" }}>{req.compOffWorkedDate || "Sunday Deployment Verified"}</span></div>
+                              <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 2 }}>
+                                <span>Comp Credit:</span>
+                                <span style={{ color: "#8CE99A", fontWeight: 600 }}>Overtime/Holiday Relief Applied (100% Paid)</span>
+                              </div>
+                            </div>
+                          )}
+                          {!isSpecialLeave && (
+                            <div style={{ marginTop: 3, display: "flex", gap: 6, alignItems: "center" }}>
+                              <span>{req.type} Balance:</span>
+                              <span style={{ color: "#7DD3FC", fontWeight: 600 }}>{curBal.toFixed(1)}d</span>
+                              <span>→ After Approval:</span>
+                              <span style={{ color: newBal > 0 ? "#8CE99A" : "#F26B6B", fontWeight: 600 }}>{newBal.toFixed(1)}d remaining</span>
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                          <button className="btn" disabled={running} onClick={() => handleApproveLeave(req)}
+                            style={{ flex: 1, textAlign: "center", borderColor: "#8CE99A", color: "#8CE99A", background: "rgba(140,233,154,0.12)", fontWeight: 600, padding: "6px 10px" }}>
+                            {isOnDuty ? `✓ Approve On-Duty (+Rs.${travelAllowanceAmt.toLocaleString("en-IN")})` : (isSpecialLeave ? `✓ Approve ${req.type} (-${reqDays}d)` : `✓ Approve Leave (-${reqDays}d)`)}
+                          </button>
+                          <button className="btn" disabled={running} onClick={() => handleRejectLeave(req)}
+                            style={{ textAlign: "center", borderColor: "rgba(242,107,107,0.4)", color: "#F26B6B", background: "rgba(242,107,107,0.08)", padding: "6px 12px" }}>
+                            ✕ Reject
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Section 2: Loan Requests */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, paddingBottom: 4, borderBottom: "1px solid rgba(147,196,212,0.2)" }}>
+                <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "#93C4D4", letterSpacing: "0.06em" }}>
+                  💰 LOAN REQUESTS ({pendingLoans.length})
+                </span>
+              </div>
+              {pendingLoans.length === 0 ? (
+                <div className="mono" style={{ fontSize: 11, color: "#4A6070", padding: "10px", background: "rgba(255,255,255,0.02)", borderRadius: 3, textAlign: "center" }}>
+                  — No pending loan requests —
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {pendingLoans.map((req) => {
+                    const emp = (db.emp_docs || []).find(e => e.name === req.emp);
+                    return (
+                      <div key={req.id} style={{ padding: 12, borderRadius: 4, background: "rgba(147,196,212,0.04)", border: "1px solid rgba(147,196,212,0.25)", display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "#F4F7FB" }}>{req.emp}</div>
+                            <div className="mono" style={{ fontSize: 10, color: "#7C93AA" }}>{emp?.dept || "Staff"} · {req.type}</div>
+                          </div>
+                          <span className="mono" style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 10, background: "rgba(242,184,75,0.15)", color: "#F2B84B", border: "1px solid rgba(242,184,75,0.3)" }}>
+                            Under Review
+                          </span>
+                        </div>
+                        <div className="mono" style={{ fontSize: 10.5, color: "#9FB4C8", background: "rgba(0,0,0,0.25)", padding: "6px 8px", borderRadius: 3, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
+                          <div>Principal: <span style={{ color: "#F4F7FB", fontWeight: 600 }}>{req.amount}</span></div>
+                          <div>Rate: <span style={{ color: "#93C4D4" }}>{req.rate}</span> ({req.tenure})</div>
+                          <div style={{ gridColumn: "span 2", marginTop: 2, color: "#F2B84B", fontWeight: 600 }}>
+                            Monthly EMI: {req.emi} (Payroll Deduction)
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                          <button className="btn" disabled={running} onClick={() => handleApproveLoan(req)}
+                            style={{ flex: 1, textAlign: "center", borderColor: "#93C4D4", color: "#93C4D4", background: "rgba(147,196,212,0.12)", fontWeight: 600, padding: "6px 10px" }}>
+                            ✓ Approve &amp; Disburse Loan
+                          </button>
+                          <button className="btn" disabled={running} onClick={() => handleRejectLoan(req)}
+                            style={{ textAlign: "center", borderColor: "rgba(242,107,107,0.4)", color: "#F26B6B", background: "rgba(242,107,107,0.08)", padding: "6px 12px" }}>
+                            ✕ Reject
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Section 3: Reimbursement Claims */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, paddingBottom: 4, borderBottom: "1px solid rgba(242,107,138,0.25)" }}>
+                <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "#F26B8A", letterSpacing: "0.06em" }}>
+                  🧾 EXPENSE REIMBURSEMENT CLAIMS ({pendingClaims.length})
+                </span>
+              </div>
+              {pendingClaims.length === 0 ? (
+                <div className="mono" style={{ fontSize: 11, color: "#4A6070", padding: "10px", background: "rgba(255,255,255,0.02)", borderRadius: 3, textAlign: "center" }}>
+                  — No pending reimbursement claims —
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {pendingClaims.map((req) => {
+                    const emp = (db.emp_docs || []).find(e => e.name === req.emp);
+                    const amt = Number(req.claimAmount) || 1200;
+                    return (
+                      <div key={req.id} style={{ padding: 12, borderRadius: 4, background: "rgba(242,107,138,0.05)", border: "1px solid rgba(242,107,138,0.3)", display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "#F4F7FB" }}>{req.emp}</div>
+                            <div className="mono" style={{ fontSize: 10, color: "#7C93AA" }}>{emp?.dept || "Staff"} · ESS Claim #{req.id}</div>
+                          </div>
+                          <span className="mono" style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 10, background: "rgba(242,107,138,0.18)", color: "#F26B8A", border: "1px solid rgba(242,107,138,0.35)" }}>
+                            Pending HR
+                          </span>
+                        </div>
+                        <div className="mono" style={{ fontSize: 10.5, color: "#9FB4C8", background: "rgba(0,0,0,0.25)", padding: "6px 8px", borderRadius: 3, display: "flex", flexDirection: "column", gap: 4 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span>Category: <strong style={{ color: "#DCE6F2" }}>{req.claimCategory || "Expense"}</strong></span>
+                            <span>Claim: <strong style={{ color: "#8CE99A", fontSize: 12 }}>Rs.{amt.toLocaleString("en-IN")}</strong></span>
+                          </div>
+                          <div style={{ color: "#FFD166", fontSize: 10 }}>
+                            ⚡ On approval: Will auto-credit to Special Allowances &amp; disburse in payroll.
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                          <button className="btn" disabled={running} onClick={() => handleApproveClaim(req)}
+                            style={{ flex: 1, textAlign: "center", borderColor: "#8CE99A", color: "#8CE99A", background: "rgba(140,233,154,0.12)", fontWeight: 600, padding: "6px 10px" }}>
+                            ✓ Approve &amp; Add to Special Allowances
+                          </button>
+                          <button className="btn" disabled={running} onClick={() => handleRejectClaim(req)}
+                            style={{ textAlign: "center", borderColor: "rgba(242,107,107,0.4)", color: "#F26B6B", background: "rgba(242,107,107,0.08)", padding: "6px 12px" }}>
+                            ✕ Reject
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Section 4: Attendance Regularizations */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, paddingBottom: 4, borderBottom: "1px solid rgba(242,184,75,0.25)" }}>
+                <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "#F2B84B", letterSpacing: "0.06em" }}>
+                  ⏱️ ATTENDANCE REGULARIZATIONS ({pendingAttendanceCorrections.length})
+                </span>
+              </div>
+              {pendingAttendanceCorrections.length === 0 ? (
+                <div className="mono" style={{ fontSize: 11, color: "#4A6070", padding: "10px", background: "rgba(255,255,255,0.02)", borderRadius: 3, textAlign: "center" }}>
+                  — No pending attendance corrections —
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {pendingAttendanceCorrections.map((req) => {
+                    const emp = (db.emp_docs || []).find(e => e.name === req.emp);
+                    return (
+                      <div key={req.id} style={{ padding: 12, borderRadius: 4, background: "rgba(242,184,75,0.05)", border: "1px solid rgba(242,184,75,0.3)", display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "#F4F7FB" }}>{req.emp}</div>
+                            <div className="mono" style={{ fontSize: 10, color: "#7C93AA" }}>{emp?.dept || "Staff"} · ESS Correction #{req.id}</div>
+                          </div>
+                          <span className="mono" style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 10, background: "rgba(242,184,75,0.18)", color: "#F2B84B", border: "1px solid rgba(242,184,75,0.35)" }}>
+                            Pending HR
+                          </span>
+                        </div>
+                        <div className="mono" style={{ fontSize: 10.5, color: "#9FB4C8", background: "rgba(0,0,0,0.25)", padding: "6px 8px", borderRadius: 3, display: "flex", flexDirection: "column", gap: 3 }}>
+                          <div>Date: <strong style={{ color: "#DCE6F2" }}>{req.corrDate}</strong> · Session: <strong style={{ color: "#F2B84B" }}>{req.corrSession}</strong></div>
+                          <div>Reason: <span style={{ color: "#7DD3FC" }}>{req.corrReason || "Hardware Glitch / Punch Error"}</span></div>
+                          <div style={{ color: "#8CE99A", fontSize: 10, marginTop: 2 }}>
+                            ⚡ On approval: Will write verified punch to Attendance &amp; update live attendance sheet.
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                          <button className="btn" disabled={running} onClick={() => handleApproveAttendanceCorrection(req)}
+                            style={{ flex: 1, textAlign: "center", borderColor: "#8CE99A", color: "#8CE99A", background: "rgba(140,233,154,0.12)", fontWeight: 600, padding: "6px 10px" }}>
+                            ✓ Approve &amp; Update Attendance Sheet
+                          </button>
+                          <button className="btn" disabled={running} onClick={() => handleRejectAttendanceCorrection(req)}
+                            style={{ textAlign: "center", borderColor: "rgba(242,107,107,0.4)", color: "#F26B6B", background: "rgba(242,107,107,0.08)", padding: "6px 12px" }}>
+                            ✕ Reject
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Section 5: HR Document Requests */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, paddingBottom: 4, borderBottom: "1px solid rgba(255,209,102,0.25)" }}>
+                <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "#FFD166", letterSpacing: "0.06em" }}>
+                  📄 HR DOCUMENT &amp; CERTIFICATE REQUESTS ({pendingDocRequests.length})
+                </span>
+              </div>
+              {pendingDocRequests.length === 0 ? (
+                <div className="mono" style={{ fontSize: 11, color: "#4A6070", padding: "10px", background: "rgba(255,255,255,0.02)", borderRadius: 3, textAlign: "center" }}>
+                  — No pending document requests —
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {pendingDocRequests.map((req) => {
+                    const emp = (db.emp_docs || []).find(e => e.name === req.emp);
+                    return (
+                      <div key={req.id} style={{ padding: 12, borderRadius: 4, background: "rgba(255,209,102,0.05)", border: "1px solid rgba(255,209,102,0.3)", display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "#F4F7FB" }}>{req.emp}</div>
+                            <div className="mono" style={{ fontSize: 10, color: "#7C93AA" }}>{emp?.dept || "Staff"} · ESS Doc #{req.id}</div>
+                          </div>
+                          <span className="mono" style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 10, background: "rgba(255,209,102,0.18)", color: "#FFD166", border: "1px solid rgba(255,209,102,0.35)" }}>
+                            Pending HR
+                          </span>
+                        </div>
+                        <div className="mono" style={{ fontSize: 10.5, color: "#9FB4C8", background: "rgba(0,0,0,0.25)", padding: "6px 8px", borderRadius: 3, display: "flex", flexDirection: "column", gap: 3 }}>
+                          <div>Document Title: <strong style={{ color: "#FFD166" }}>{req.docType || "Official HR Certificate"}</strong></div>
+                          {req.docPurpose && <div>Purpose: <span style={{ color: "#DCE6F2" }}>{req.docPurpose}</span></div>}
+                          <div style={{ color: "#8CE99A", fontSize: 10, marginTop: 2 }}>
+                            ⚡ On approval: Official digitally authorized certificate with QR code and seal is issued to employee.
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                          <button className="btn" disabled={running} onClick={() => handleApproveDocRequest(req)}
+                            style={{ flex: 1, textAlign: "center", borderColor: "#FFD166", color: "#FFD166", background: "rgba(255,209,102,0.12)", fontWeight: 600, padding: "6px 10px" }}>
+                            ✓ Authorize &amp; Issue Certificate
+                          </button>
+                          <button className="btn" disabled={running} onClick={() => handleRejectDocRequest(req)}
+                            style={{ textAlign: "center", borderColor: "rgba(242,107,107,0.4)", color: "#F26B6B", background: "rgba(242,107,107,0.08)", padding: "6px 12px" }}>
+                            ✕ Reject
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Section 6: Profile Modification Requests */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, paddingBottom: 4, borderBottom: "1px solid rgba(79,209,197,0.25)" }}>
+                <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "#4FD1C5", letterSpacing: "0.06em" }}>
+                  👤 PROFILE MODIFICATION REQUESTS ({pendingProfileUpdates.length})
+                </span>
+              </div>
+              {pendingProfileUpdates.length === 0 ? (
+                <div className="mono" style={{ fontSize: 11, color: "#4A6070", padding: "10px", background: "rgba(255,255,255,0.02)", borderRadius: 3, textAlign: "center" }}>
+                  — No pending profile updates —
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {pendingProfileUpdates.map((req) => {
+                    const emp = (db.emp_docs || []).find(e => e.name === req.emp);
+                    return (
+                      <div key={req.id} style={{ padding: 12, borderRadius: 4, background: "rgba(79,209,197,0.05)", border: "1px solid rgba(79,209,197,0.28)", display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "#F4F7FB" }}>{req.emp}</div>
+                            <div className="mono" style={{ fontSize: 10, color: "#7C93AA" }}>{emp?.dept || "Staff"} · ESS #{req.id}</div>
+                          </div>
+                          <span className="mono" style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 10, background: "rgba(79,209,197,0.18)", color: "#4FD1C5", border: "1px solid rgba(79,209,197,0.35)" }}>
+                            Pending HR
+                          </span>
+                        </div>
+                        <div className="mono" style={{ fontSize: 10.5, color: "#9FB4C8", background: "rgba(0,0,0,0.25)", padding: "6px 8px", borderRadius: 3, display: "flex", flexDirection: "column", gap: 3 }}>
+                          <div>Field to Modify: <strong style={{ color: "#4FD1C5" }}>{req.profileField || "Profile Record"}</strong></div>
+                          <div>New Requested Value: <span style={{ color: "#DCE6F2", fontWeight: 600 }}>{req.profileValue || req.details}</span></div>
+                          <div style={{ color: "#8CE99A", fontSize: 10, marginTop: 2 }}>
+                            ⚡ On approval: Will update employee master record in emp_docs &amp; notify employee.
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                          <button className="btn" disabled={running} onClick={() => handleApproveProfileUpdate(req)}
+                            style={{ flex: 1, textAlign: "center", borderColor: "#4FD1C5", color: "#4FD1C5", background: "rgba(79,209,197,0.12)", fontWeight: 600, padding: "6px 10px" }}>
+                            ✓ Approve &amp; Update Master Record
+                          </button>
+                          <button className="btn" disabled={running} onClick={() => handleRejectProfileUpdate(req)}
+                            style={{ textAlign: "center", borderColor: "rgba(242,107,107,0.4)", color: "#F26B6B", background: "rgba(242,107,107,0.08)", padding: "6px 12px" }}>
+                            ✕ Reject
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Section 7: HR & IT Helpdesk Tickets */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, paddingBottom: 4, borderBottom: "1px solid rgba(147,196,212,0.25)" }}>
+                <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "#93C4D4", letterSpacing: "0.06em" }}>
+                  🎫 HR &amp; IT HELPDESK TICKETS ({pendingTickets.length})
+                </span>
+              </div>
+              {pendingTickets.length === 0 ? (
+                <div className="mono" style={{ fontSize: 11, color: "#4A6070", padding: "10px", background: "rgba(255,255,255,0.02)", borderRadius: 3, textAlign: "center" }}>
+                  — No pending support tickets —
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {pendingTickets.map((req) => {
+                    const emp = (db.emp_docs || []).find(e => e.name === req.emp);
+                    const prioColor = req.ticketPriority === "Critical" ? "#EF4444" : (req.ticketPriority === "High" ? "#F2946B" : "#FFD166");
+                    const prioBg = req.ticketPriority === "Critical" ? "rgba(239,68,68,0.18)" : (req.ticketPriority === "High" ? "rgba(242,148,107,0.18)" : "rgba(255,209,102,0.18)");
+                    return (
+                      <div key={req.id} style={{ padding: 12, borderRadius: 4, background: "rgba(147,196,212,0.05)", border: "1px solid rgba(147,196,212,0.28)", display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "#F4F7FB" }}>{req.emp}</div>
+                            <div className="mono" style={{ fontSize: 10, color: "#7C93AA" }}>{emp?.dept || "Staff"} · Ticket #{req.id}</div>
+                          </div>
+                          <span className="mono" style={{ fontSize: 9.5, padding: "2px 7px", borderRadius: 10, background: prioBg, color: prioColor, border: `1px solid ${prioColor}44` }}>
+                            {req.ticketPriority || "Standard"} Priority
+                          </span>
+                        </div>
+                        <div className="mono" style={{ fontSize: 10.5, color: "#9FB4C8", background: "rgba(0,0,0,0.25)", padding: "6px 8px", borderRadius: 3, display: "flex", flexDirection: "column", gap: 3 }}>
+                          <div>Category: <strong style={{ color: "#93C4D4" }}>{req.ticketCategory || "General IT / HR Support"}</strong></div>
+                          <div>Subject: <span style={{ color: "#DCE6F2", fontWeight: 600 }}>{req.ticketSubject || req.details}</span></div>
+                          {req.ticketDescription && (
+                            <div style={{ fontSize: 9.5, color: "#7C93AA", marginTop: 2, fontStyle: "italic" }}>
+                              "{req.ticketDescription}"
+                            </div>
+                          )}
+                          <div style={{ color: "#8CE99A", fontSize: 10, marginTop: 2 }}>
+                            ⚡ Resolution action: Dispatches technician or HR resolution protocol.
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                          <button className="btn" disabled={running} onClick={() => handleResolveTicket(req)}
+                            style={{ flex: 1, textAlign: "center", borderColor: "#8CE99A", color: "#8CE99A", background: "rgba(140,233,154,0.12)", fontWeight: 600, padding: "6px 10px" }}>
+                            ✓ Resolve &amp; Close Ticket
+                          </button>
+                          {!req.status?.includes("Escalated") ? (
+                            <button className="btn" disabled={running} onClick={() => handleEscalateTicket(req)}
+                              style={{ textAlign: "center", borderColor: "rgba(242,148,107,0.4)", color: "#F2946B", background: "rgba(242,148,107,0.08)", padding: "6px 12px" }}>
+                              ⚠️ Escalate
+                            </button>
+                          ) : (
+                            <div className="mono" style={{ display: "flex", alignItems: "center", fontSize: 9.5, padding: "4px 8px", background: "rgba(242,148,107,0.14)", border: "1px solid rgba(242,148,107,0.35)", borderRadius: 3, color: "#F2946B" }}>
+                              ⚠️ Escalated to Tier-2
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <button className="btn" onClick={() => setShowNotifications(false)}
+              style={{ width: "100%", textAlign: "center", marginTop: 10, borderColor: "rgba(255,255,255,0.15)", color: "#7C93AA" }}>
+              Close Center
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Full & Final Settlement & No-Dues Clearance Statement Modal ── */}
+      {ffStatement && (
+        <div id="ff-print-backdrop" style={{
+          position: "fixed", inset: 0, background: "rgba(4,8,14,0.85)",
+          backdropFilter: "blur(6px)", display: "flex", alignItems: "center",
+          justifyContent: "center", zIndex: 75, padding: 16
+        }}>
+          <style>{`
+            @media print {
+              @page {
+                size: A4 portrait;
+                margin: 10mm 14mm;
+              }
+              body * {
+                visibility: hidden !important;
+              }
+              #ff-print-container,
+              #ff-print-container * {
+                visibility: visible !important;
+              }
+              #ff-print-backdrop {
+                position: static !important;
+                background: none !important;
+                backdrop-filter: none !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                display: block !important;
+                inset: auto !important;
+              }
+              #ff-print-container {
+                position: absolute !important;
+                left: 0 !important;
+                top: 0 !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                max-height: none !important;
+                overflow: visible !important;
+                background: #ffffff !important;
+                color: #0f172a !important;
+                border: 1.5px solid #0f172a !important;
+                border-radius: 4px !important;
+                padding: 24px 28px !important;
+                box-shadow: none !important;
+              }
+              .no-print {
+                display: none !important;
+              }
+              #ff-print-container div,
+              #ff-print-container span {
+                color: #0f172a !important;
+              }
+              #ff-print-container .print-border-box {
+                background: #f8fafc !important;
+                border: 1px solid #cbd5e1 !important;
+              }
+              #ff-print-container .print-net-banner {
+                background: #f1f5f9 !important;
+                border: 2px solid #0f172a !important;
+              }
+              #ff-print-container .print-net-banner * {
+                color: #0f172a !important;
+              }
+            }
+          `}</style>
+          <div id="ff-print-container" style={{
+            width: 620, maxHeight: "92vh", overflowY: "auto",
+            background: "#0D1420", border: "1px solid rgba(140,233,154,0.4)",
+            borderRadius: 6, padding: "24px 28px", boxShadow: "0 25px 60px rgba(0,0,0,0.85)"
+          }} className="scrollbar-thin">
+
+            {/* Top Bar with Print/Copy/Close */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+              <div>
+                <div className="mono" style={{ fontSize: 9.5, color: "#8CE99A", letterSpacing: "0.12em", fontWeight: 700 }}>
+                  ENTERPRISE HR DIGITAL TWIN · DEPROVISIONING &amp; DISBURSEMENT
+                </div>
+                <div style={{ fontWeight: 700, fontSize: 18, color: "#F4F7FB", marginTop: 2, display: "flex", alignItems: "center", gap: 8 }}>
+                  <Shield size={20} color="#8CE99A" />
+                  Full &amp; Final Settlement &amp; No-Dues Clearance
+                </div>
+              </div>
+              <X className="no-print" size={18} style={{ cursor: "pointer", color: "#7C93AA" }} onClick={() => setFfStatement(null)} />
+            </div>
+
+            {/* Employee Banner */}
+            <div className="print-border-box" style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              padding: "12px 14px", background: "rgba(255,255,255,0.03)",
+              border: "1px solid rgba(255,255,255,0.08)", borderRadius: 4, marginBottom: 16
+            }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#F4F7FB" }}>{ffStatement.emp.name}</div>
+                <div className="mono" style={{ fontSize: 10.5, color: "#7C93AA", marginTop: 2 }}>
+                  {ffStatement.emp.designation} · {ffStatement.emp.dept} · {ffStatement.emp.id}
+                </div>
+              </div>
+              <div style={{ textAlign: "right" }} className="mono">
+                <div style={{ fontSize: 10.5, color: "#F26B6B", fontWeight: 700 }}>
+                  Reason: {ffStatement.exitReason}
+                </div>
+                <div style={{ fontSize: 9.5, color: "#7C93AA", marginTop: 2 }}>
+                  Exit Date: {ffStatement.exitDate} · Daily Rate: Rs.{ffStatement.dailyRate.toLocaleString("en-IN")}/d
+                </div>
+              </div>
+            </div>
+
+            {/* Section A: No-Dues Departmental Clearance */}
+            <div style={{ marginBottom: 16 }}>
+              <div className="mono" style={{ fontSize: 10, color: "#7DD3FC", letterSpacing: "0.08em", marginBottom: 8, fontWeight: 700 }}>
+                1. DEPARTMENTAL NO-DUES &amp; SYSTEM RECOVERY
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div className="print-border-box" style={{ padding: "8px 10px", background: "rgba(125,211,252,0.05)", border: "1px solid rgba(125,211,252,0.2)", borderRadius: 3 }}>
+                  <div className="mono" style={{ fontSize: 9.5, color: "#7DD3FC", display: "flex", alignItems: "center", gap: 5 }}>
+                    <CheckCircle2 size={12} color="#7DD3FC" /> BIOMETRIC &amp; ACCESS
+                  </div>
+                  <div style={{ fontSize: 11, color: "#F4F7FB", marginTop: 4, fontWeight: 500 }}>
+                    Profile Locked · Revoked
+                  </div>
+                </div>
+
+                <div className="print-border-box" style={{ padding: "8px 10px", background: "rgba(242,148,107,0.05)", border: "1px solid rgba(242,148,107,0.25)", borderRadius: 3 }}>
+                  <div className="mono" style={{ fontSize: 9.5, color: "#F2946B", display: "flex", alignItems: "center", gap: 5 }}>
+                    <CheckCircle2 size={12} color="#F2946B" /> HARDWARE &amp; ASSETS POOL
+                  </div>
+                  <div style={{ fontSize: 11, color: "#F4F7FB", marginTop: 4, fontWeight: 500 }}>
+                    {ffStatement.empAssetsRecovered.length > 0 ? `${ffStatement.empAssetsRecovered.length} Returned to Pool` : "No Assets Allocated"}
+                  </div>
+                </div>
+
+                <div className="print-border-box" style={{ padding: "8px 10px", background: "rgba(147,196,212,0.05)", border: "1px solid rgba(147,196,212,0.25)", borderRadius: 3 }}>
+                  <div className="mono" style={{ fontSize: 9.5, color: "#93C4D4", display: "flex", alignItems: "center", gap: 5 }}>
+                    <CheckCircle2 size={12} color="#93C4D4" /> LOANS &amp; LIABILITIES
+                  </div>
+                  <div style={{ fontSize: 11, color: "#F4F7FB", marginTop: 4, fontWeight: 500 }}>
+                    {ffStatement.totalLoanBalance > 0
+                      ? (ffStatement.loanDeficit > 0
+                        ? `Rs.${ffStatement.actualLoanRecovered.toLocaleString("en-IN")} Recovered (Rs.${ffStatement.loanDeficit.toLocaleString("en-IN")} Deficit Due)`
+                        : `Rs.${ffStatement.totalLoanBalance.toLocaleString("en-IN")} Cleared via F&F`)
+                      : "Zero Loan Liabilities"}
+                  </div>
+                </div>
+
+                <div className="print-border-box" style={{ padding: "8px 10px", background: "rgba(216,166,242,0.05)", border: "1px solid rgba(216,166,242,0.25)", borderRadius: 3 }}>
+                  <div className="mono" style={{ fontSize: 9.5, color: "#D8A6F2", display: "flex", alignItems: "center", gap: 5 }}>
+                    <CheckCircle2 size={12} color="#D8A6F2" /> LEAVE &amp; ESS REQUESTS
+                  </div>
+                  <div style={{ fontSize: 11, color: "#F4F7FB", marginTop: 4, fontWeight: 500 }}>
+                    Pending Requests Voided
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Section B: Financial Settlement Breakdown */}
+            <div style={{ marginBottom: 16 }}>
+              <div className="mono" style={{ fontSize: 10, color: "#FFD166", letterSpacing: "0.08em", marginBottom: 8, fontWeight: 700 }}>
+                2. FINANCIAL SETTLEMENT BREAKDOWN (AUDITED)
+              </div>
+              <div className="print-border-box mono" style={{
+                background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.08)",
+                borderRadius: 4, padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5 }}>
+                  <span style={{ color: "#7C93AA" }}>(+) Prorated Earned Wage ({ffStatement.exitDay} working days{ffStatement.exitDay === 0 ? " · Already disbursed in regular payroll" : (ffStatement.weekendDays ? ` · ${ffStatement.weekendDays} weekends excluded` : "")}):</span>
+                  <span style={{ color: "#DCE6F2", fontWeight: 600 }}>+Rs.{ffStatement.earnedWage.toLocaleString("en-IN")}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5 }}>
+                  <span style={{ color: "#7C93AA" }}>(+) Leave Encashment ({ffStatement.alBalance.toFixed(1)}d unused Annual Leave):</span>
+                  <span style={{ color: "#8CE99A", fontWeight: 600 }}>+Rs.{ffStatement.leaveEncashment.toLocaleString("en-IN")}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, borderTop: "1px solid rgba(255,255,255,0.05)", paddingTop: 4 }}>
+                  <span style={{ color: "#9FB4C8" }}>Gross Accrued Settlement:</span>
+                  <span style={{ color: "#F4F7FB", fontWeight: 700 }}>Rs.{ffStatement.grossSettlement.toLocaleString("en-IN")}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5 }}>
+                  <span style={{ color: "#7C93AA" }}>(-) Statutory Deductions (12% PF: Rs.{ffStatement.pf.toLocaleString("en-IN")} · 7% TDS: Rs.{ffStatement.tds.toLocaleString("en-IN")}):</span>
+                  <span style={{ color: "#F26B6B", fontWeight: 600 }}>-Rs.{ffStatement.statutoryDeductions.toLocaleString("en-IN")}</span>
+                </div>
+                {ffStatement.totalLoanBalance > 0 && (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5 }}>
+                      <span style={{ color: "#7C93AA" }}>(-) Loan Principal Deducted via F&F:</span>
+                      <span style={{ color: "#F26B6B", fontWeight: 600 }}>-Rs.{ffStatement.actualLoanRecovered.toLocaleString("en-IN")}</span>
+                    </div>
+                    {ffStatement.loanDeficit > 0 && (
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, background: "rgba(242,107,107,0.1)", padding: "2px 6px", borderRadius: 3 }}>
+                        <span style={{ color: "#F26B6B", fontWeight: 600 }}>⚠️ Unpaid Loan Deficit Due from Employee:</span>
+                        <span style={{ color: "#F26B6B", fontWeight: 700 }}>Rs.{ffStatement.loanDeficit.toLocaleString("en-IN")}</span>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* Net Payout Banner */}
+                <div className="print-net-banner" style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  marginTop: 6, paddingTop: 8, borderTop: "1px solid rgba(140,233,154,0.3)",
+                  background: "rgba(140,233,154,0.08)", padding: "10px 12px", borderRadius: 4
+                }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#8CE99A" }}>NET SETTLEMENT DISBURSABLE</div>
+                    <div style={{ fontSize: 9.5, color: "#7C93AA" }}>Status: Cleared for final bank transfer &amp; archived</div>
+                  </div>
+                  <div style={{ fontSize: 19, fontWeight: 700, color: "#8CE99A" }}>
+                    Rs. {ffStatement.netSettlement.toLocaleString("en-IN")}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer / System Verification Badge */}
+            <div className="print-border-box mono" style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              padding: "10px 12px", background: "rgba(255,255,255,0.02)",
+              border: "1px solid rgba(255,255,255,0.06)", borderRadius: 3, marginBottom: 14
+            }}>
+              <div style={{ fontSize: 9.5, color: "#5C7891" }}>
+                <div>Clearance Reference: <span style={{ color: "#9FB4C8" }}>{ffStatement.refId}</span></div>
+                <div>Timestamp: <span style={{ color: "#9FB4C8" }}>{ffStatement.generatedAt}</span> · Master DB Record: <span style={{ color: "#8CE99A" }}>payroll_records (PR)</span></div>
+              </div>
+              <div style={{
+                fontSize: 9, fontWeight: 700, padding: "3px 8px", borderRadius: 2,
+                background: "rgba(140,233,154,0.15)", color: "#8CE99A", border: "1px solid rgba(140,233,154,0.35)"
+              }}>
+                ✓ OFFICIALLY SETTLED
+              </div>
+            </div>
+
+            {/* Modal action buttons */}
+            <div className="no-print" style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={() => window.print()}
+                className="btn mono"
+                style={{
+                  flex: 1, padding: "10px 18px", background: "rgba(125,211,252,0.12)",
+                  border: "1px solid rgba(125,211,252,0.4)", color: "#7DD3FC", fontWeight: 600,
+                  textAlign: "center", borderRadius: 4, cursor: "pointer", display: "flex",
+                  alignItems: "center", justifyContent: "center", gap: 6
+                }}>
+                🖨️ Print / Save Statement
+              </button>
+              <button
+                onClick={() => setFfStatement(null)}
+                className="btn mono"
+                style={{
+                  flex: 1, padding: "10px 18px", background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.18)", color: "#DCE6F2", fontWeight: 600,
+                  textAlign: "center", borderRadius: 4, cursor: "pointer"
+                }}>
+                Close Statement
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
