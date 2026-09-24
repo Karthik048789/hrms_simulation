@@ -15,10 +15,12 @@ const INITIAL_MODULES = [
   { id: "performance", name: "Performance & Appraisal", layer: 1, table_name: "performance_cycles", active: true, is_custom: false },
   { id: "assets", name: "Asset Management", layer: 1, table_name: "company_assets", active: true, is_custom: false },
   { id: "loans", name: "Loan Management", layer: 1, table_name: "employee_loans", active: true, is_custom: false },
-  { id: "awards", name: "Excellence Awards", layer: 1, table_name: "excellence_awards", active: true, is_custom: false },
+  { id: "comp_incentives", name: "Compensation & Incentives", layer: 1, table_name: "comp_incentives", active: true, is_custom: false },
   { id: "payroll", name: "Payroll & Statutory", layer: 2, table_name: "payroll_records", active: true, is_custom: false },
-  { id: "special_allowances", name: "Special Allowances", layer: 2, table_name: "special_allowances", active: true, is_custom: false },
   { id: "ess", name: "Self-Service (ESS)", layer: 3, table_name: "ess_requests", active: true, is_custom: false },
+  { id: "budget", name: "Dept Budget & Headcount", layer: 0, table_name: "dept_budget_control", active: true, is_custom: false },
+  { id: "finance_ledger", name: "Cost & P/L Ledger", layer: 2, table_name: "finance_ledger", active: true, is_custom: false },
+  { id: "attrition", name: "Attrition & Retention", layer: 2, table_name: "attrition_register", active: true, is_custom: false },
 ];
 
 async function seed() {

@@ -1,10 +1,12 @@
-import React, { useState, useRef, useEffect, useMemo } from "react";
+import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import {
   Users, CalendarCheck, Wallet, TrendingUp, Monitor,
   Shield, CreditCard, Award, Gift,
   Plus, X, Check, RotateCcw, Power, ChevronDown, ChevronUp, ChevronRight, Fingerprint, Bell,
   FileText, Calendar, Clock, Receipt, UserCheck, FolderPlus, Download, FileSpreadsheet, LifeBuoy,
-  Database, Search, Filter, Eye, ArrowRight, CheckCircle2, AlertTriangle, AlertCircle, XCircle, ExternalLink, RefreshCw
+  Database, Search, Filter, Eye, ArrowRight, CheckCircle2, AlertTriangle, AlertCircle, XCircle, ExternalLink, RefreshCw,
+  Zap, Sliders, BarChart3, Building2, Sparkles,
+  Laptop, GraduationCap, CheckSquare, Square, ArrowLeft
 } from "lucide-react";
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
@@ -12,7 +14,8 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 const COLORS = {
   emp_docs: "#4FD1C5", attendance_leave: "#7DD3FC", payroll: "#8CE99A",
   performance: "#F2B84B", ess: "#D8A6F2", assets: "#F2946B",
-  loans: "#93C4D4", awards: "#FFD166", special_allowances: "#F26B8A",
+  loans: "#93C4D4", comp_incentives: "#F59E0B", awards: "#FFD166", special_allowances: "#F26B8A",
+  budget: "#F5A524", finance_ledger: "#9AE6B4", attrition: "#FC8181",
 };
 const CUSTOM_PALETTE = ["#F26B6B", "#6BC2F2", "#F2D96B", "#B98CF2", "#6BF2C2"];
 
@@ -33,6 +36,447 @@ const DESIGNATION_RATES = {
   "Director": 8000
 };
 
+/* ═════════════════════════════════════════════════════════════════════════════
+   FINANCE / ACCOUNTANT LAYER — WORKFORCE COST, ATTRITION & RETENTION TWIN
+   ─────────────────────────────────────────────────────────────────────────────
+   Everything below is a *pure* model: same inputs → same outputs, no React, no
+   side effects. The UI simply renders what these functions derive from the live
+   employee table. That is what makes this a digital twin rather than a report —
+   the numbers re-derive themselves the instant anyone is hired, promoted,
+   retained or offboarded.
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+// Accountant-owned master plan. Sanctioned headcount is the ceiling HR may not
+// cross; annualBudget is the money envelope every workforce action draws from.
+const DEPT_BUDGET_PLAN = {
+  "Engineering": { sanctioned: 10, annualBudget: 32000000, criticality: "High" },
+  "Human Resources": { sanctioned: 4, annualBudget: 9600000, criticality: "Medium" },
+  "Finance": { sanctioned: 5, annualBudget: 13500000, criticality: "High" },
+  "Product": { sanctioned: 6, annualBudget: 19000000, criticality: "High" },
+  "Sales & Marketing": { sanctioned: 8, annualBudget: 22000000, criticality: "High" },
+  "Customer Support": { sanctioned: 7, annualBudget: 12000000, criticality: "Medium" },
+  "Operations": { sanctioned: 6, annualBudget: 14000000, criticality: "Medium" },
+  "Legal": { sanctioned: 3, annualBudget: 8500000, criticality: "Low" },
+};
+
+// Employer statutory load on base salary (PF + ESI + gratuity accrual + insurance).
+const STATUTORY_LOAD = 0.18;
+
+// Per-grade economics. `annualValue` is the revenue/output a fully-ramped person
+// at that grade is expected to generate — the other half of the P&L question.
+const GRADE_ECONOMICS = {
+  "Associate": {
+    onboarding: { recruitmentFee: 45000, training: 35000, travel: 12000, itProvisioning: 55000, onboardingAdmin: 8000, bgVerification: 4000 },
+    overheadAnnual: 60000, annualValue: 780000, rampUpMonths: 2, rampUpProductivity: 0.45, daysToFill: 30,
+  },
+  "Specialist": {
+    onboarding: { recruitmentFee: 70000, training: 48000, travel: 18000, itProvisioning: 62000, onboardingAdmin: 10000, bgVerification: 5000 },
+    overheadAnnual: 72000, annualValue: 1150000, rampUpMonths: 2, rampUpProductivity: 0.5, daysToFill: 38,
+  },
+  "Senior Specialist": {
+    onboarding: { recruitmentFee: 110000, training: 62000, travel: 26000, itProvisioning: 70000, onboardingAdmin: 12000, bgVerification: 6000 },
+    overheadAnnual: 84000, annualValue: 1520000, rampUpMonths: 3, rampUpProductivity: 0.5, daysToFill: 45,
+  },
+  "Lead": {
+    onboarding: { recruitmentFee: 165000, training: 78000, travel: 38000, itProvisioning: 82000, onboardingAdmin: 15000, bgVerification: 8000 },
+    overheadAnnual: 96000, annualValue: 1980000, rampUpMonths: 3, rampUpProductivity: 0.55, daysToFill: 55,
+  },
+  "Manager": {
+    onboarding: { recruitmentFee: 245000, training: 95000, travel: 52000, itProvisioning: 92000, onboardingAdmin: 18000, bgVerification: 10000 },
+    overheadAnnual: 108000, annualValue: 2750000, rampUpMonths: 4, rampUpProductivity: 0.55, daysToFill: 68,
+  },
+  "Senior Manager": {
+    onboarding: { recruitmentFee: 330000, training: 110000, travel: 68000, itProvisioning: 100000, onboardingAdmin: 22000, bgVerification: 12000 },
+    overheadAnnual: 115000, annualValue: 3900000, rampUpMonths: 4, rampUpProductivity: 0.6, daysToFill: 80,
+  },
+  "Director": {
+    onboarding: { recruitmentFee: 420000, training: 120000, travel: 85000, itProvisioning: 110000, onboardingAdmin: 25000, bgVerification: 15000 },
+    overheadAnnual: 120000, annualValue: 6100000, rampUpMonths: 5, rampUpProductivity: 0.6, daysToFill: 95,
+  },
+};
+
+const ONBOARDING_LABELS = {
+  recruitmentFee: "Recruitment / Agency Fee",
+  training: "Induction & Skills Training",
+  travel: "Relocation & Travel",
+  itProvisioning: "IT Asset Provisioning",
+  onboardingAdmin: "Onboarding Admin & Payroll Setup",
+  bgVerification: "Background Verification",
+};
+
+// Retention levers the accountant can price against the cost of losing someone.
+const RETENTION_LEVERS = [
+  { key: "correction", label: "Pay Correction", detail: "+8% band correction", hikePct: 8, riskCut: 14, oneTimeMonths: 0 },
+  { key: "retention_hike", label: "Retention Hike", detail: "+15% off-cycle raise", hikePct: 15, riskCut: 26, oneTimeMonths: 0 },
+  { key: "promotion", label: "Promotion", detail: "Elevate to next grade", hikePct: null, riskCut: 38, oneTimeMonths: 0, requiresAppraisal: true },
+  { key: "bonus", label: "Retention Bonus", detail: "2 months one-time, no run-rate impact", hikePct: 0, riskCut: 18, oneTimeMonths: 2 },
+];
+
+const RISK_BANDS = [
+  { min: 75, band: "Critical", color: "#F26B6B" },
+  { min: 55, band: "High", color: "#F2946B" },
+  { min: 30, band: "Moderate", color: "#F2B84B" },
+  { min: 0, band: "Low", color: "#8CE99A" },
+];
+
+function riskBandOf(score) {
+  return RISK_BANDS.find((b) => score >= b.min) || RISK_BANDS[RISK_BANDS.length - 1];
+}
+
+function gradeEcon(designation) {
+  return GRADE_ECONOMICS[designation] || GRADE_ECONOMICS["Associate"];
+}
+
+function gradeRank(designation) {
+  if (!designation) return 0;
+  const raw = String(designation).trim();
+  const exact = DESIG_POOL.indexOf(raw);
+  if (exact !== -1) return exact;
+  const lower = raw.toLowerCase();
+  if (lower.includes("director")) return 6;
+  if (lower.includes("senior manager") || lower.includes("sr. manager")) return 5;
+  if (lower.includes("manager")) return 4;
+  if (lower.includes("lead")) return 3;
+  if (lower.includes("senior specialist") || lower.includes("sr. specialist")) return 2;
+  if (lower.includes("specialist")) return 1;
+  return 0;
+}
+
+function fmtINR(n) {
+  return "Rs." + Math.round(Number(n) || 0).toLocaleString("en-IN");
+}
+
+// Compact Indian-notation money for dense KPI tiles (Rs.1.24Cr / Rs.45.0L).
+function fmtMoneyShort(n) {
+  const v = Number(n) || 0;
+  const sign = v < 0 ? "-" : "";
+  const a = Math.abs(v);
+  if (a >= 10000000) return `${sign}Rs.${(a / 10000000).toFixed(2)}Cr`;
+  if (a >= 100000) return `${sign}Rs.${(a / 100000).toFixed(1)}L`;
+  if (a >= 1000) return `${sign}Rs.${(a / 1000).toFixed(1)}K`;
+  return `${sign}Rs.${Math.round(a)}`;
+}
+
+function monthsBetween(fromStr, toStr) {
+  if (!fromStr) return 0;
+  const f = new Date(typeof fromStr === "string" && !fromStr.includes("T") ? fromStr + "T00:00:00" : fromStr);
+  const t = new Date(typeof toStr === "string" && !toStr.includes("T") ? toStr + "T00:00:00" : toStr);
+  if (isNaN(f.getTime()) || isNaN(t.getTime())) return 0;
+  return Math.max(0, (t.getFullYear() - f.getFullYear()) * 12 + (t.getMonth() - f.getMonth()) + (t.getDate() >= f.getDate() ? 0 : -1));
+}
+
+function daysBetween(fromStr, toStr) {
+  if (!fromStr) return 0;
+  const f = new Date(typeof fromStr === "string" && !fromStr.includes("T") ? fromStr + "T00:00:00" : fromStr);
+  const t = new Date(typeof toStr === "string" && !toStr.includes("T") ? toStr + "T00:00:00" : toStr);
+  if (isNaN(f.getTime()) || isNaN(t.getTime())) return 0;
+  return Math.max(0, Math.round((t - f) / 86400000));
+}
+
+/** Itemised one-time cost of bringing one person of `designation` on board. */
+function onboardingCostModel(designation) {
+  const g = gradeEcon(designation);
+  const heads = Object.entries(g.onboarding).map(([key, amount]) => ({
+    key, label: ONBOARDING_LABELS[key] || key, amount,
+  }));
+  return { heads, total: heads.reduce((s, h) => s + h.amount, 0) };
+}
+
+/** Recurring annual cost to carry one person: salary + statutory + overhead. */
+function annualCostModel(emp) {
+  const desig = emp.designation || emp.desig || "Associate";
+  const rate = Number(emp.dailyRate) || DESIGNATION_RATES[desig] || 1000;
+  const baseSalary = rate * 30 * 12;
+  const statutory = Math.round(baseSalary * STATUTORY_LOAD);
+  const overhead = gradeEcon(desig).overheadAnnual;
+  return { rate, baseSalary, statutory, overhead, total: baseSalary + statutory + overhead };
+}
+
+/**
+ * Per-employee profit & loss twin. Answers the two questions the accountant
+ * actually cares about: is this person worth their cost at steady state, and
+ * have they paid back what it cost to hire them yet?
+ */
+function employeeROIModel(emp, today) {
+  const desig = emp.designation || emp.desig || "Associate";
+  const g = gradeEcon(desig);
+  const cost = annualCostModel(emp);
+  const onboarding = onboardingCostModel(desig);
+  const annualValue = g.annualValue;
+
+  const steadyMargin = annualValue - cost.total;
+  // Output forgone while the new joiner is still ramping to full productivity.
+  const rampUpLoss = Math.round((annualValue / 12) * g.rampUpMonths * (1 - g.rampUpProductivity));
+  const year1Net = steadyMargin - onboarding.total - rampUpLoss;
+
+  const tenureMonths = (emp.tenureMonths !== undefined && emp.tenureMonths !== null)
+    ? Number(emp.tenureMonths)
+    : monthsBetween(emp.joined, today);
+  const rampedMonths = Math.min(tenureMonths, g.rampUpMonths);
+  const fullMonths = Math.max(0, tenureMonths - g.rampUpMonths);
+  const valueToDate = Math.round((annualValue / 12) * (rampedMonths * g.rampUpProductivity + fullMonths));
+  const costToDate = Math.round((cost.total / 12) * tenureMonths) + onboarding.total;
+  const netToDate = valueToDate - costToDate;
+
+  const investment = onboarding.total + rampUpLoss;
+  const breakEvenMonths = steadyMargin > 0 ? Math.ceil(investment / (steadyMargin / 12)) : null;
+
+  let verdict = "Break-even";
+  if (steadyMargin > annualValue * 0.08) verdict = "Profitable";
+  else if (steadyMargin < 0) verdict = "Loss-making";
+
+  return {
+    designation: desig, annualValue, cost, onboarding, steadyMargin, rampUpLoss,
+    year1Net, tenureMonths, valueToDate, costToDate, netToDate, breakEvenMonths,
+    verdict, recovered: netToDate >= 0,
+  };
+}
+
+/**
+ * Attrition flight-risk twin. `sig` is a bundle of live signals assembled from
+ * the HRMS tables — the model stays pure and returns its own reasoning so the
+ * UI can show *why* someone is at risk, not just a number.
+ */
+function flightRiskModel(sig) {
+  const drivers = [];
+  let score = 10; // everyone carries some baseline probability of leaving
+
+  const add = (points, label) => {
+    if (points === 0) return;
+    score += points;
+    drivers.push({ points, label });
+  };
+
+  if (sig.onNotice) {
+    return { score: 100, band: "Departing", color: "#F26B6B", drivers: [{ points: 100, label: "Already serving notice period" }] };
+  }
+
+  // Tenure risk curve: peaks between the 1st and 3rd year, flattens after.
+  const t = sig.tenureMonths;
+  if (t < 6) add(12, `Early tenure (${t}mo) — onboarding attrition window`);
+  else if (t < 12) add(8, `Under 1 year (${t}mo) — still settling`);
+  else if (t <= 30) add(22, `Peak-risk tenure band (${t}mo) — most marketable point`);
+  else if (t <= 48) add(12, `Mid tenure (${t}mo)`);
+  else add(4, `Long tenure (${t}mo) — anchored`);
+
+  // Career stagnation: no grade movement for a long stretch.
+  if (sig.monthsSinceGradeChange >= 30) add(20, `No promotion in ${sig.monthsSinceGradeChange}mo — career stagnation`);
+  else if (sig.monthsSinceGradeChange >= 18) add(11, `No promotion in ${sig.monthsSinceGradeChange}mo`);
+
+  // Pay position within the grade band. Retention raises push this above 1.0.
+  if (sig.compaRatio < 0.95) add(18, `Paid below grade band (compa-ratio ${sig.compaRatio.toFixed(2)})`);
+  else if (sig.compaRatio < 1.0) add(9, `Slightly below band median (${sig.compaRatio.toFixed(2)})`);
+  else if (sig.compaRatio >= 1.1) add(-10, `Paid above band (${sig.compaRatio.toFixed(2)}) — retention premium active`);
+
+  // High performers who are not moving are the most expensive people to lose.
+  if (sig.rating === "Outstanding" || sig.rating === "Exceeds Expectations") {
+    if (sig.monthsSinceGradeChange >= 18) add(16, `High performer (${sig.rating}) with no recent progression`);
+    else add(5, `High performer (${sig.rating}) — market-attractive`);
+  } else if (sig.rating === "Needs Improvement" || sig.rating === "Unsatisfactory") {
+    add(12, `Low appraisal rating (${sig.rating}) — disengagement risk`);
+  } else if (!sig.rating) {
+    add(8, "No appraisal on file — unmanaged / unrecognised");
+  }
+
+  if (sig.awardsCount > 0) add(-8, `${sig.awardsCount} excellence award(s) — recognised`);
+
+  // Behavioural signals pulled from attendance and the self-service desk.
+  if (sig.recentLeaveDays >= 6) add(10, `${sig.recentLeaveDays} leave days recently — disengagement signal`);
+  if (sig.openTickets > 0) add(sig.openTickets >= 2 ? 10 : 6, `${sig.openTickets} unresolved ESS/helpdesk request(s)`);
+
+  // An active loan is a real financial anchor that suppresses voluntary exits.
+  if (sig.hasActiveLoan) add(-12, "Active company loan — financial anchor");
+
+  // Structural risk: a team with no leader bleeds people.
+  if (!sig.deptHasManager) add(9, "Department has no active manager — leadership vacuum");
+  if (sig.deptVacancyRate >= 0.3) add(8, `${Math.round(sig.deptVacancyRate * 100)}% of team seats vacant — workload strain`);
+  if (sig.attritionShock > 0) add(sig.attritionShock, `Market attrition shock (+${sig.attritionShock} pts)`);
+
+  score = Math.max(2, Math.min(97, Math.round(score)));
+  const b = riskBandOf(score);
+  return { score, band: b.band, color: b.color, drivers: drivers.sort((a, c) => Math.abs(c.points) - Math.abs(a.points)) };
+}
+
+/**
+ * What it actually costs the company when this person walks out. This is the
+ * number every retention offer gets priced against.
+ */
+function attritionLossModel(emp, ctx) {
+  const desig = emp.designation || emp.desig || "Associate";
+  const g = gradeEcon(desig);
+  const cost = annualCostModel(emp);
+  const onboarding = onboardingCostModel(desig);
+
+  // An internal successor collapses the vacancy window dramatically.
+  const daysVacant = ctx.internalSuccessor ? Math.min(12, g.daysToFill) : g.daysToFill;
+  const dailyValue = g.annualValue / 365;
+
+  const heads = [];
+  heads.push({
+    label: "Backfill recruitment & onboarding",
+    amount: ctx.internalSuccessor ? Math.round(onboarding.total * 0.35) : onboarding.total,
+    note: ctx.internalSuccessor ? "Reduced — internal successor available, agency fee avoided" : `Full external hire at ${desig} grade`,
+  });
+  heads.push({
+    label: "Vacancy output loss",
+    amount: Math.round(dailyValue * daysVacant),
+    note: `${daysVacant} days seat empty x ${fmtINR(dailyValue)}/day of forgone output`,
+  });
+  heads.push({
+    label: "Knowledge & handover loss",
+    amount: Math.round((Math.min(ctx.tenureMonths, 36) / 36) * g.annualValue * 0.18),
+    note: `${ctx.tenureMonths}mo of accumulated context leaving the building`,
+  });
+  heads.push({
+    label: "Team coverage strain",
+    amount: Math.round(dailyValue * daysVacant * 0.22 + (ctx.teamSize > 0 ? cost.total * 0.03 : 0)),
+    note: `Overtime and context-switching across ${ctx.teamSize} remaining teammate(s)`,
+  });
+  if (ctx.isManager) {
+    heads.push({
+      label: "Leadership gap premium",
+      amount: Math.round(g.annualValue * 0.22 * (daysVacant / 365) + 85000),
+      note: "Decision latency and unsupervised reports until succession completes",
+    });
+  }
+  heads.push({
+    label: "Exit admin & F&F processing",
+    amount: 18000 + gradeRank(desig) * 6000,
+    note: "Clearance, settlement computation, compliance filing",
+  });
+
+  const total = heads.reduce((s, h) => s + h.amount, 0);
+  return { heads, total, daysVacant, dailyValue: Math.round(dailyValue) };
+}
+
+/**
+ * Prices one retention lever against the modelled cost of the exit it prevents.
+ * Positive netBenefit = cheaper to keep them than to replace them.
+ */
+function retentionOfferModel(emp, lever, riskScore, attritionLoss, rating = null) {
+  const desig = emp.designation || emp.desig || "Associate";
+  const rate = Number(emp.dailyRate) || DESIGNATION_RATES[desig] || 1000;
+  const currentAnnual = rate * 30 * 12;
+  const rank = gradeRank(desig);
+
+  // Ineligible promotion conditions:
+  // 1. Employee is already at the maximum grade (Director - rank 6)
+  // 2. Promotion requires an approved performance appraisal
+  const effectiveRating = rating || emp.rating || emp.performanceScore;
+  if (lever.key === "promotion") {
+    if (rank >= DESIG_POOL.length - 1 || (lever.requiresAppraisal && !effectiveRating)) {
+      return {
+        lever,
+        newRate: rate,
+        newDesignation: desig,
+        currentAnnual,
+        newAnnual: currentAnnual,
+        recurringCost: 0,
+        oneTimeCost: 0,
+        yearOneCost: 0,
+        residualRisk: riskScore,
+        expectedSaving: 0,
+        netBenefit: -Infinity,
+        roi: 0,
+        ineligible: true,
+        ineligibleReason: rank >= DESIG_POOL.length - 1
+          ? "Already at highest rank (Director)"
+          : "Requires completed performance appraisal",
+        verdict: "RELEASE",
+      };
+    }
+  }
+
+  let newRate = rate;
+  let newDesignation = desig;
+  if (lever.key === "promotion") {
+    const nextIdx = Math.min(rank + 1, DESIG_POOL.length - 1);
+    newDesignation = DESIG_POOL[nextIdx];
+    newRate = DESIGNATION_RATES[newDesignation] || rate;
+  } else if (lever.hikePct) {
+    newRate = Math.round(rate * (1 + lever.hikePct / 100));
+  }
+
+  const newAnnual = newRate * 30 * 12;
+  const recurringCost = Math.round((newAnnual - currentAnnual) * (1 + STATUTORY_LOAD));
+  const oneTimeCost = Math.round((lever.oneTimeMonths || 0) * rate * 30);
+  const yearOneCost = recurringCost + oneTimeCost;
+
+  const residualRisk = Math.max(5, riskScore - lever.riskCut);
+  const expectedLossNow = (attritionLoss * riskScore) / 100;
+  const expectedLossAfter = (attritionLoss * residualRisk) / 100;
+  const expectedSaving = Math.round(expectedLossNow - expectedLossAfter);
+  const netBenefit = expectedSaving - yearOneCost;
+  const roi = yearOneCost > 0 ? expectedSaving / yearOneCost : (expectedSaving > 0 ? Infinity : 0);
+
+  return {
+    lever, newRate, newDesignation, currentAnnual, newAnnual,
+    recurringCost, oneTimeCost, yearOneCost, residualRisk,
+    expectedSaving, netBenefit, roi,
+    verdict: netBenefit > 0 ? "RETAIN" : "RELEASE",
+  };
+}
+
+/**
+ * Succession / replacement search, in the order a real HR team would look:
+ * same grade in the same team, then a promotable junior (which cascades a new
+ * vacancy one grade down), then a lateral from another department.
+ */
+const DEPT_AFFINITY = {
+  "Engineering": ["Engineering", "Product"],
+  "Product": ["Product", "Engineering", "Operations", "Customer Support", "Sales & Marketing"],
+  "Sales & Marketing": ["Sales & Marketing", "Customer Support", "Product", "Operations"],
+  "Customer Support": ["Customer Support", "Sales & Marketing", "Operations", "Human Resources"],
+  "Finance": ["Finance", "Operations", "Legal", "Human Resources"],
+  "Human Resources": ["Human Resources", "Operations", "Legal", "Finance"],
+  "Operations": ["Operations", "Finance", "Product", "Customer Support", "Human Resources", "Sales & Marketing"],
+  "Legal": ["Legal", "Finance", "Human Resources", "Operations"],
+};
+
+/**
+ * Succession / replacement search, in the order a real HR team would look:
+ * same grade in the same team, then a promotable junior (which cascades a new
+ * vacancy one grade down), then a lateral from another domain-compatible department.
+ */
+function findReplacementCandidates(emp, activeEmps, ratingOf) {
+  const desig = emp.designation || emp.desig || "Associate";
+  const dept = emp.department || emp.dept;
+  const rank = gradeRank(desig);
+  const pool = activeEmps.filter((e) => e.id !== emp.id && !e.status?.includes("Notice Period"));
+  const out = [];
+
+  pool.forEach((c) => {
+    const cDesig = c.designation || c.desig || "Associate";
+    const cDept = c.department || c.dept;
+    const cRank = gradeRank(cDesig);
+    const rating = ratingOf(c.name);
+    const promotable = rating && rating !== "Needs Improvement" && rating !== "Unsatisfactory";
+
+    if (cDept === dept && cRank === rank) {
+      out.push({
+        emp: c, mode: "Lateral Cover", fitScore: 92, cascades: false, cost: 0,
+        note: `Same grade in ${dept} — can absorb the seat immediately`
+      });
+    } else if (cDept === dept && cRank === rank - 1 && promotable) {
+      const delta = Math.round(((DESIGNATION_RATES[desig] || 0) - (DESIGNATION_RATES[cDesig] || 0)) * 30 * 12 * (1 + STATUTORY_LOAD));
+      out.push({
+        emp: c, mode: "Internal Promotion", fitScore: 85, cascades: true, cost: delta,
+        note: `One grade below in ${dept}, appraisal "${rating}" — cascades a ${cDesig} vacancy`
+      });
+    } else if (cDept !== dept && cRank === rank) {
+      const compatible = (DEPT_AFFINITY[dept] || [dept]).includes(cDept);
+      if (compatible) {
+        out.push({
+          emp: c, mode: "Cross-Dept Transfer", fitScore: 68, cascades: true, cost: 0,
+          note: `Same grade in aligned dept (${cDept}) — transferable domain skill overlap`
+        });
+      }
+    }
+  });
+
+  return out.sort((a, b) => b.fitScore - a.fitScore).slice(0, 5);
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const INITIAL_MODULES = [
@@ -41,10 +485,12 @@ const INITIAL_MODULES = [
   { id: "performance", name: "Performance & Appraisal", layer: 1, table: "performance_cycles", active: true },
   { id: "assets", name: "Asset Management", layer: 1, table: "company_assets", active: true },
   { id: "loans", name: "Loan Management", layer: 1, table: "employee_loans", active: true },
-  { id: "awards", name: "Excellence Awards", layer: 1, table: "excellence_awards", active: true },
+  { id: "comp_incentives", name: "Compensation & Incentives", layer: 1, table: "comp_incentives", active: true },
   { id: "payroll", name: "Payroll & Statutory", layer: 2, table: "payroll_records", active: true },
-  { id: "special_allowances", name: "Special Allowances", layer: 2, table: "special_allowances", active: true },
   { id: "ess", name: "Self-Service (ESS)", layer: 3, table: "ess_requests", active: true },
+  { id: "budget", name: "Dept Budget & Headcount", layer: 0, table: "dept_budget_control", active: true },
+  { id: "finance_ledger", name: "Cost & P/L Ledger", layer: 2, table: "finance_ledger", active: true },
+  { id: "attrition", name: "Attrition & Retention", layer: 2, table: "attrition_register", active: true },
 ];
 
 const INITIAL_EDGES = [
@@ -52,24 +498,47 @@ const INITIAL_EDGES = [
   { dependent: "performance", dependency: "emp_docs" },
   { dependent: "assets", dependency: "emp_docs" },
   { dependent: "loans", dependency: "emp_docs" },
-  { dependent: "awards", dependency: "emp_docs" },
+  { dependent: "comp_incentives", dependency: "emp_docs" },
+  { dependent: "comp_incentives", dependency: "performance" },
   { dependent: "payroll", dependency: "emp_docs" },
   { dependent: "payroll", dependency: "attendance_leave" },
   { dependent: "payroll", dependency: "loans" },
-  { dependent: "payroll", dependency: "awards" },
-  { dependent: "special_allowances", dependency: "emp_docs" },
-  { dependent: "special_allowances", dependency: "payroll" },
+  { dependent: "payroll", dependency: "comp_incentives" },
   { dependent: "ess", dependency: "emp_docs" },
   { dependent: "ess", dependency: "attendance_leave" },
   { dependent: "ess", dependency: "payroll" },
   { dependent: "ess", dependency: "performance" },
+  { dependent: "ess", dependency: "comp_incentives" },
+  // Finance / accountant layer
+  { dependent: "emp_docs", dependency: "budget" },
+  { dependent: "finance_ledger", dependency: "budget" },
+  { dependent: "finance_ledger", dependency: "emp_docs" },
+  { dependent: "finance_ledger", dependency: "payroll" },
+  { dependent: "attrition", dependency: "emp_docs" },
+  { dependent: "attrition", dependency: "performance" },
+  { dependent: "attrition", dependency: "finance_ledger" },
 ];
+
+// The accountant's opening balance sheet: one budget control row per department.
+function seedBudgetRows(fiscalYear = "FY 2026-27") {
+  return Object.entries(DEPT_BUDGET_PLAN).map(([dept, plan]) => ({
+    id: `BUD-${dept.replace(/[^A-Za-z]/g, "").slice(0, 10).toUpperCase()}`,
+    dept,
+    fiscalYear,
+    sanctioned: plan.sanctioned,
+    annualBudget: plan.annualBudget,
+    criticality: plan.criticality,
+    oneTimeSpent: 0,      // onboarding + retention + attrition charges booked to date
+    status: "Within Budget",
+  }));
+}
 
 const INITIAL_DB = {
   emp_docs: [],
   attendance_leave: [],
-  performance: [], assets: [], loans: [], awards: [],
-  payroll: [], special_allowances: [], ess: [],
+  performance: [], assets: [], loans: [], comp_incentives: [],
+  payroll: [], ess: [],
+  budget: seedBudgetRows(), finance_ledger: [], attrition: [],
 };
 
 const KEYWORD_RULES = [
@@ -80,8 +549,7 @@ const KEYWORD_RULES = [
   { kws: ["perform", "appraisal", "goal", "kpi", "review"], deps: ["emp_docs", "performance"] },
   { kws: ["leave", "vacation", "attend", "shift", "time", "half"], deps: ["emp_docs", "attendance_leave"] },
   { kws: ["loan", "advance", "borrow", "repay", "emi"], deps: ["emp_docs", "loans"] },
-  { kws: ["award", "excel", "recogni", "nominat", "star"], deps: ["emp_docs", "awards"] },
-  { kws: ["allowance", "lta", "sca", "school", "children", "travel"], deps: ["emp_docs", "payroll"] },
+  { kws: ["award", "excel", "recogni", "nominat", "star", "allowance", "lta", "sca", "stipend", "incentive", "bonus"], deps: ["emp_docs", "comp_incentives"] },
   { kws: ["self", "ess", "portal", "profile"], deps: ["emp_docs", "attendance_leave", "payroll", "performance"] },
 ];
 
@@ -93,8 +561,28 @@ function suggestDeps(name, moduleIds) {
   return moduleIds.includes("emp_docs") ? ["emp_docs"] : [];
 }
 
-let idSeed = 100;
-const nextId = (prefix) => `${prefix}-${idSeed++}`;
+let idSeed = 250;
+const knownIds = new Set();
+
+function registerKnownId(id) {
+  if (id && typeof id === "string") {
+    knownIds.add(id);
+    const m = id.match(/-(\d+)$/);
+    if (m) {
+      const num = parseInt(m[1], 10);
+      if (num >= idSeed) idSeed = num + 1;
+    }
+  }
+}
+
+const nextId = (prefix) => {
+  let candidate;
+  do {
+    candidate = `${prefix}-${idSeed++}`;
+  } while (knownIds.has(candidate));
+  knownIds.add(candidate);
+  return candidate;
+};
 
 function getLocalDateStr(d = new Date()) {
   if (typeof d === "string") {
@@ -225,6 +713,93 @@ function getStatusBadge(status) {
   return { label: s, color: "#7DD3FC", bg: "rgba(125,211,252,0.12)", border: "rgba(125,211,252,0.3)", icon: "●" };
 }
 
+const OrgChart = ({ db, gradeRank }) => {
+  const activeEmps = (db.emp_docs || []).filter(e => !e.status?.includes("Inactive"));
+
+  const depts = {};
+  activeEmps.forEach(emp => {
+    const d = emp.dept || emp.department;
+    if (!depts[d]) depts[d] = [];
+    depts[d].push(emp);
+  });
+
+  const Node = ({ emp, isTop }) => (
+    <div style={{
+      background: isTop ? "rgba(255,215,0,0.05)" : "rgba(255,255,255,0.02)",
+      border: `1px solid ${isTop ? "rgba(255,215,0,0.3)" : "rgba(255,255,255,0.1)"}`,
+      borderRadius: 6, padding: "8px 12px",
+      minWidth: 120, textAlign: "center", zIndex: 2,
+      boxShadow: isTop ? "0 0 10px rgba(255,215,0,0.1)" : "none"
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: isTop ? "#F2D9A6" : "#DCE6F2" }}>
+        {emp?.name} {(emp?.designation || emp?.desig || "").toLowerCase().includes("director") && <span title="Executive Director" style={{ filter: "drop-shadow(0 0 4px rgba(255,215,0,0.6))" }}>👑</span>}
+      </div>
+      <div style={{ fontSize: 9, color: "#7C93AA", textTransform: "uppercase", marginTop: 4 }}>{emp?.designation || emp?.desig}</div>
+    </div>
+  );
+
+  return (
+    <div className="scrollbar-thin" style={{ height: "100%", minHeight: 460, maxHeight: 540, overflowY: "auto", padding: "20px 20px 60px 20px", display: "flex", flexDirection: "column", gap: 60 }}>
+      {Object.entries(depts).map(([deptName, emps]) => {
+        const sorted = [...emps].sort((a, b) => gradeRank(b.designation || b.desig) - gradeRank(a.designation || a.desig));
+        const director = sorted[0];
+        const others = sorted.slice(1);
+        const middle = others.filter(e => (e.designation || e.desig || "").toLowerCase().match(/manager|lead/));
+        const bottom = others.filter(e => !(e.designation || e.desig || "").toLowerCase().match(/manager|lead/));
+
+        return (
+          <div key={deptName} style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+            <div className="mono" style={{ fontSize: 12, color: "#5C7891", marginBottom: 16, letterSpacing: "0.15em", background: "rgba(0,0,0,0.3)", padding: "4px 12px", borderRadius: 4 }}>{deptName}</div>
+
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+              {director && <Node emp={director} isTop={true} />}
+
+              {(middle.length > 0 || bottom.length > 0) && (
+                <div style={{ width: 1, height: 24, background: "rgba(255,255,255,0.15)" }} />
+              )}
+
+              {middle.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%" }}>
+                  <div style={{
+                    display: "flex", justifyContent: "center", gap: 24, position: "relative",
+                    paddingTop: 12, borderTop: middle.length > 1 ? "1px solid rgba(255,255,255,0.15)" : "none"
+                  }}>
+                    {middle.map((m, i) => (
+                      <div key={m.id} style={{ display: "flex", flexDirection: "column", alignItems: "center", position: "relative" }}>
+                        {middle.length > 1 && <div style={{ position: "absolute", top: -12, width: 1, height: 12, background: "rgba(255,255,255,0.15)" }} />}
+                        <Node emp={m} />
+                      </div>
+                    ))}
+                  </div>
+
+                  {bottom.length > 0 && (
+                    <div style={{ width: 1, height: 24, background: "rgba(255,255,255,0.15)" }} />
+                  )}
+                </div>
+              )}
+
+              {bottom.length > 0 && (
+                <div style={{
+                  display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 12, maxWidth: 500,
+                  paddingTop: 12, borderTop: (bottom.length > 1 && middle.length === 0) ? "1px solid rgba(255,255,255,0.15)" : "none",
+                  position: "relative"
+                }}>
+                  {bottom.map((b, i) => (
+                    <div key={b.id} style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center" }}>
+                      {(bottom.length > 1 && middle.length === 0) && <div style={{ position: "absolute", top: -12, width: 1, height: 12, background: "rgba(255,255,255,0.15)" }} />}
+                      <Node emp={b} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 export default function ModuleSimulation() {
   const [modules, setModules] = useState(INITIAL_MODULES);
   const [edges, setEdges] = useState(INITIAL_EDGES);
@@ -239,17 +814,34 @@ export default function ModuleSimulation() {
   const [running, setRunning] = useState(false);
   const [networkOn, setNetworkOn] = useState(true);
   const [biometricEnabled, setBiometricEnabled] = useState(true);
-  const [hrViewEnabled, setHrViewEnabled] = useState(true);
+  const [leftPanelView, setLeftPanelView] = useState("dependencies");
+  // Three simulated personas: HR Admin, Employee (self-service), and the new
+  // Accountant / Finance Controller who owns budgets and approves headcount cost.
+  const [simRole, setSimRole] = useState("HR"); // "HR" | "EMP" | "FIN" | "SUPERADMIN"
+  const hrViewEnabled = simRole === "HR" || simRole === "SUPERADMIN";
+  const financeView = simRole === "FIN" || simRole === "SUPERADMIN";
+  // Back-compat shim so existing "switch to HR view" call sites keep working.
+  const setHrViewEnabled = (v) =>
+    setSimRole((prev) => ((typeof v === "function" ? v(prev === "HR") : v) ? "HR" : "EMP"));
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDeps, setNewDeps] = useState(new Set());
   const [newModScope, setNewModScope] = useState("empty"); // "empty", "all", "specific"
   const [newModEmpId, setNewModEmpId] = useState("");
-  // ── Employee form modal ──────────────────────────────────────────────────
+  // ── Employee form modal (2-Step Onboarding Wizard) ──────────────────────
   const [showEmpForm, setShowEmpForm] = useState(false);
   const [empFormName, setEmpFormName] = useState("");
   const [empFormDept, setEmpFormDept] = useState(DEPT_POOL[0]);
   const [empFormDesig, setEmpFormDesig] = useState(DESIG_POOL[0]);
+  const [onboardStep, setOnboardStep] = useState(1); // 1 = Details & Vacancy, 2 = Provisioning Checklist
+  const [hireMode, setHireMode] = useState("new"); // "new" | "rehire"
+  const [rehireEmpId, setRehireEmpId] = useState("");
+  const [selectedVacancyId, setSelectedVacancyId] = useState("");
+  const [onboardLeaves, setOnboardLeaves] = useState({ annual: 12, casual: 6, sick: 6 });
+  const [onboardLaptop, setOnboardLaptop] = useState(true);
+  const [onboardTraining, setOnboardTraining] = useState(true);
+  const [onboardBiometric, setOnboardBiometric] = useState(true);
+  const [onboardStatutory, setOnboardStatutory] = useState(true);
   // ── Leave wizard modal ────────────────────────────────────────────────────
   const [showLeave, setShowLeave] = useState(false);
   const [leaveStep, setLeaveStep] = useState(1);   // 1 = pick emp, 2 = type+days
@@ -275,7 +867,67 @@ export default function ModuleSimulation() {
   const [inspectRecord, setInspectRecord] = useState(null);
   const [isDbExplorerExpanded, setIsDbExplorerExpanded] = useState(true);
   const [ffStatement, setFfStatement] = useState(null);
+
+  const [chartAnim, setChartAnim] = useState({
+    active: false,
+    type: null, // "ADD" | "OFFBOARD"
+    empName: "",
+    empDesig: "",
+    dept: "",
+    stage: 0,
+    message: ""
+  });
+  const [offboardChecklist, setOffboardChecklist] = useState({
+    itHardware: true,
+    accessCard: true,
+    emailRevoked: true,
+    biometricRevoked: true,
+    loansCleared: true,
+    claimsAudited: true,
+    managerHandover: true,
+    ndaSigned: true
+  });
+  const [selectedFlowDept, setSelectedFlowDept] = useState("ACTIVE"); // "ACTIVE" | "ALL" | specific dept
+  // ── Finance control tower ────────────────────────────────────────────────
+  const [finTab, setFinTab] = useState("overview"); // overview | risk | vacancy | scenario | roi
+  const [expandedRisk, setExpandedRisk] = useState(null);
+  const [scenario, setScenario] = useState({
+    hiringFreeze: false,
+    blanketHikePct: 0,
+    attritionShockPct: 0,
+    retainCriticalOnly: true,
+  });
   const syncTimerRef = useRef(null);
+
+  const activeDepts = useMemo(() => {
+    const deptsWithStaff = DEPT_POOL.filter(d =>
+      (db.emp_docs || []).some(e => (e.department === d || e.dept === d) && !e.status?.includes("Inactive"))
+    );
+    return deptsWithStaff.length > 0 ? deptsWithStaff : DEPT_POOL.slice(0, 4);
+  }, [db.emp_docs]);
+
+  const displayedFlowDepts = useMemo(() => {
+    return DEPT_POOL;
+  }, []);
+
+  const computeAutoOffboardChecklist = useCallback(() => {
+    return {
+      itHardware: true,
+      accessCard: true,
+      emailRevoked: true,
+      biometricRevoked: true,
+      loansCleared: true,
+      claimsAudited: true,
+      managerHandover: true,
+      ndaSigned: true
+    };
+  }, []);
+
+  useEffect(() => {
+    if (modal?.type === "offboard" && modal?.empId) {
+      setOffboardChecklist(computeAutoOffboardChecklist(modal.empId));
+    }
+  }, [modal?.type, modal?.empId, computeAutoOffboardChecklist]);
 
   const pendingLeaves = useMemo(() => {
     return (db.attendance_leave || []).filter(r => r.type !== "Attendance" && r.dates !== "Balance" && r.status === "Pending Approval");
@@ -378,7 +1030,17 @@ export default function ModuleSimulation() {
           // Use fresh arrays (not shared refs from INITIAL_DB) to avoid mutation bugs
           const newDb = Object.fromEntries(Object.keys(INITIAL_DB).map(k => [k, []]));
           fetchedRecs.forEach(rec => {
+            if (rec.id) registerKnownId(rec.id);
+            if (rec.data?.id) registerKnownId(rec.data.id);
             if (!newDb[rec.module_id]) newDb[rec.module_id] = [];
+            // Auto-heal: Ensure both dept and department match on emp_docs records
+            if (rec.module_id === "emp_docs" && rec.data) {
+              const d = rec.data.dept || rec.data.department;
+              if (d) {
+                rec.data.dept = d;
+                rec.data.department = d;
+              }
+            }
             newDb[rec.module_id].push(rec.data);
           });
 
@@ -424,6 +1086,33 @@ export default function ModuleSimulation() {
                 return updatedEmp;
               }
               return e;
+            });
+          }
+
+          // Budget control rows are the accountant's opening balance. If the
+          // database has never been seeded, lay them down and persist once so
+          // every later action has an envelope to draw from.
+          if (!newDb.budget || newDb.budget.length === 0) {
+            newDb.budget = seedBudgetRows();
+            newDb.budget.forEach(row => {
+              fetch(`${API_BASE}/api/records`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: row.id, module_id: "budget", data: row })
+              }).catch(() => { });
+            });
+          } else {
+            // Self-heal: a department added to the plan after seeding still needs a row.
+            const known = new Set(newDb.budget.map(b => b.dept));
+            seedBudgetRows().forEach(row => {
+              if (!known.has(row.dept)) {
+                newDb.budget.push(row);
+                fetch(`${API_BASE}/api/records`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ id: row.id, module_id: "budget", data: row })
+                }).catch(() => { });
+              }
             });
           }
 
@@ -544,7 +1233,7 @@ export default function ModuleSimulation() {
           setDbStatus("error");
         });
       }
-      await sleep(620);
+      await sleep(steps.length > 25 ? 120 : (steps.length > 10 ? 250 : 620));
     }
     await sleep(500);
     setHlNodes(new Set());
@@ -556,10 +1245,23 @@ export default function ModuleSimulation() {
   function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
   // Opens the Add Employee form
-  function actionAddEmployee() {
+  function actionAddEmployee(prefillVacancyId = null) {
     setEmpFormName("");
-    setEmpFormDept(DEPT_POOL[0]);
+    setHireMode("new");
+    setRehireEmpId("");
+    setSelectedVacancyId(openVacancies[0]?.id || "");
+    const availableDept = DEPT_POOL.find(d => {
+      const b = budgetByDept[d];
+      return b && b.headcount < b.sanctioned;
+    }) || DEPT_POOL[0];
+    setEmpFormDept(availableDept);
     setEmpFormDesig(DESIG_POOL[0]);
+    setOnboardStep(1);
+    setOnboardLeaves({ annual: 12, casual: 6, sick: 6 });
+    setOnboardLaptop(true);
+    setOnboardTraining(true);
+    setOnboardBiometric(true);
+    setOnboardStatutory(true);
     setShowEmpForm(true);
   }
 
@@ -567,32 +1269,189 @@ export default function ModuleSimulation() {
     if (!empFormName.trim() || running) return;
     const today = getLocalDateStr();
     const name = empFormName.trim();
-    // Rule: Check for name collision across active and inactive alumni records (Bug 3 Fix)
-    const duplicateEmp = (db.emp_docs || []).find(e => e.name.toLowerCase() === name.toLowerCase());
-    if (duplicateEmp) {
-      if (duplicateEmp.status.includes("Inactive")) {
-        pushLog("WARN", "emp_docs", `Cannot add employee: An alumni/inactive record for "${name}" already exists (${duplicateEmp.id} · ${duplicateEmp.status}). To prevent history collision with past assets, loans, and attendance records, please use a distinct name or suffix (e.g. "${name} Jr" or "${name} II").`);
-      } else {
-        pushLog("WARN", "emp_docs", `Cannot add employee: An active employee named "${name}" already exists (${duplicateEmp.id}). Please use a distinct name.`);
+    const targetAlumni = hireMode === "rehire" ? (db.emp_docs || []).find(e => e.id === rehireEmpId) : null;
+    if (hireMode === "new") {
+      const duplicateEmp = (db.emp_docs || []).find(e => e.name.toLowerCase() === name.toLowerCase());
+      if (duplicateEmp) {
+        if (duplicateEmp.status?.includes("Inactive")) {
+          pushLog("WARN", "emp_docs", `Cannot add as new employee: An alumni record for "${name}" already exists (${duplicateEmp.id}). Switch to the "Rehire Alumni" tab to bring them back!`);
+        } else {
+          pushLog("WARN", "emp_docs", `Cannot add employee: An active employee named "${name}" already exists (${duplicateEmp.id}). Please use a distinct name.`);
+        }
+        setShowEmpForm(false);
+        return;
       }
-      setShowEmpForm(false);
-      return;
     }
     const dept = empFormDept;
     const designation = empFormDesig;
+
+    // Rule: One Director per department maximum
+    if (designation.toLowerCase().includes("director")) {
+      const existingDirector = (db.emp_docs || []).find(e =>
+        (e.department === dept || e.dept === dept) &&
+        !e.status?.includes("Inactive") &&
+        e.id !== targetAlumni?.id &&
+        (e.designation || e.desig || "").toLowerCase().includes("director")
+      );
+      if (existingDirector) {
+        pushLog("WARN", "emp_docs", `Cannot hire as Director. ${dept} already has an active Director (${existingDirector.name}). A department can only have one Director.`);
+        setShowEmpForm(false);
+        return;
+      }
+    }
+
+    /* ── Finance gate ──────────────────────────────────────────────────────
+       No one joins this company until the accountant's model says the seat is
+       both sanctioned and funded. This is the control the whole twin hangs on. */
+    const gate = evaluateHire(dept, designation);
+    if (!gate.allowed) {
+      gate.reasons.forEach(r => pushLog("WARN", "budget", `🚫 Hire blocked by Finance — ${r}`));
+      pushLog("SELECT", "budget", `💡 Options: raise the sanctioned strength / envelope from the Finance Control Tower, fill the seat through internal succession, or pick a lower grade for this role.`);
+      setShowEmpForm(false);
+      return;
+    }
+    (gate.warnings || []).forEach(w => pushLog("WARN", "budget", `⚠️ Finance advisory — ${w}`));
+
     const dailyRate = DESIGNATION_RATES[designation] || 1000;
-    const empRow = { id: nextId("EMP"), name, designation, dept, status: "Active", joined: today, dailyRate };
+    const newEmpId = targetAlumni ? targetAlumni.id : nextId("EMP");
+    const empRow = targetAlumni ? {
+      ...targetAlumni,
+      name,
+      designation,
+      dept,
+      department: dept,
+      status: "Active",
+      dailyRate,
+      rejoinedDate: today,
+      lastGradeChange: today,
+      exit_date: null,
+      exitReason: null,
+      onboardingCost: Math.round(gate.onboarding.total * 0.4),
+    } : {
+      id: newEmpId, name, designation, dept, department: dept,
+      status: "Active", joined: today, dailyRate,
+      lastGradeChange: today,
+      onboardingCost: gate.onboarding.total,
+    };
+
+    // If this hire backfills an open vacancy, close it and realise the gap loss.
+    const matchingVacancy = hireMode === "vacancy"
+      ? (openVacancies.find(v => v.id === selectedVacancyId) || openVacancies.find(v => v.dept === dept && v.grade === designation))
+      : openVacancies.find(v => v.dept === dept && v.grade === designation);
+
+    const onboardingLedger = ledgerRow({
+      dept, category: "Onboarding", subCategory: "New Hire Acquisition", emp: name,
+      amount: gate.onboarding.total,
+      note: gate.onboarding.heads.map(h => `${h.label} ${fmtINR(h.amount)}`).join(" · "),
+    });
+    const budgetUpdate = chargeBudget(dept, gate.onboarding.total);
     const attRow = { id: nextId("ATT"), emp: name, date: today, type: "Attendance", status: "— (Ledger Initialized)" };
-    const alRow = { id: nextId("LV"), emp: name, type: "Annual Leave Balance", dates: "Balance", balance: 12.0, status: "12.0 days credited" };
-    const clRow = { id: nextId("LV"), emp: name, type: "Casual Leave Balance", dates: "Balance", balance: 6.0, status: "6.0 days credited" };
-    const slRow = { id: nextId("LV"), emp: name, type: "Sick Leave Balance", dates: "Balance", balance: 6.0, status: "6.0 days credited" };
+
+    // User configured leave quotas
+    const annualDays = Math.max(0, Number(onboardLeaves.annual) || 0);
+    const casualDays = Math.max(0, Number(onboardLeaves.casual) || 0);
+    const sickDays = Math.max(0, Number(onboardLeaves.sick) || 0);
+
+    const alRow = { id: nextId("LV"), emp: name, type: "Annual Leave Balance", dates: "Balance", balance: annualDays, status: `${annualDays}.0 days credited` };
+    const clRow = { id: nextId("LV"), emp: name, type: "Casual Leave Balance", dates: "Balance", balance: casualDays, status: `${casualDays}.0 days credited` };
+    const slRow = { id: nextId("LV"), emp: name, type: "Sick Leave Balance", dates: "Balance", balance: sickDays, status: `${sickDays}.0 days credited` };
+
+    // Laptop hardware allocation
+    const isTechDept = ["Engineering", "Product"].includes(dept);
+    const laptopModel = isTechDept ? 'MacBook Pro 16" (M3)' : "Dell Latitude 7440";
+    const assetCode = `AST-${Math.floor(Math.random() * 9000 + 1000)}`;
+    const assetRow = onboardLaptop ? {
+      id: nextId("ASST"),
+      emp: name,
+      asset: "Laptop",
+      code: assetCode,
+      status: "Allocated",
+      department: dept
+    } : null;
+
     setShowEmpForm(false);
+
+    // Trigger visual flowchart onboarding simulation
+    setChartAnim({
+      active: true,
+      type: "ADD",
+      empId: newEmpId,
+      empName: name,
+      empDesig: designation,
+      dept: dept,
+      stage: 1,
+      message: `🏢 Enterprise HQ: Provisioning headcount position in ${dept}...`
+    });
+
+    setTimeout(() => {
+      setChartAnim(prev => ({
+        ...prev,
+        stage: 2,
+        message: `👔 ${dept} Manager acknowledged: Workstation & checklist items allocated`
+      }));
+    }, 700);
+
+    setTimeout(() => {
+      setChartAnim(prev => ({
+        ...prev,
+        stage: 3,
+        message: `✨ ${name} (${designation}) successfully onboarded to ${dept}!`
+      }));
+    }, 1500);
+
+    setTimeout(() => {
+      setChartAnim({ active: false, type: null, empId: "", empName: "", empDesig: "", dept: "", stage: 0, message: "" });
+    }, 4500);
+
     execute([
-      { node: "emp_docs", op: "INSERT", text: `Creating employee master record — ${name} (${designation})`, row: empRow },
+      {
+        node: "emp_docs",
+        op: targetAlumni ? "UPDATE" : "INSERT",
+        text: targetAlumni
+          ? `🔄 Boomerang Rehire Approved: ${name} (${designation}) restored from Inactive to Active in ${dept}`
+          : `Creating employee master record — ${name} (${designation})`,
+        row: empRow
+      },
       { node: "attendance_leave", op: "INSERT", edge: ["attendance_leave", "emp_docs"], text: `Auto-initializing attendance ledger for ${name}`, row: attRow },
-      { node: "attendance_leave", op: "INSERT", edge: ["attendance_leave", "emp_docs"], text: `Allocating 3-tier leave quota for ${name} — 12d Annual, 6d Casual, 6d Sick credited`, row: alRow },
-      { node: "attendance_leave", op: "INSERT", text: `Crediting 6.0 days Casual Leave quota for ${name}`, row: clRow },
-      { node: "attendance_leave", op: "INSERT", text: `Crediting 6.0 days Sick Leave quota for ${name}`, row: slRow },
+      { node: "attendance_leave", op: "INSERT", edge: ["attendance_leave", "emp_docs"], text: `Allocating 3-tier leave quota for ${name} — ${annualDays}d Annual, ${casualDays}d Casual, ${sickDays}d Sick credited`, row: alRow },
+      { node: "attendance_leave", op: "INSERT", text: `Crediting ${casualDays}.0 days Casual Leave quota for ${name}`, row: clRow },
+      { node: "attendance_leave", op: "INSERT", text: `Crediting ${sickDays}.0 days Sick Leave quota for ${name}`, row: slRow },
+      ...(assetRow ? [{
+        node: "assets", op: "INSERT", edge: ["assets", "emp_docs"],
+        text: `💻 Provisioned IT Workstation: ${laptopModel} (${assetCode}) for ${name} (${dept})`,
+        row: assetRow,
+      }] : []),
+      ...(onboardTraining ? [{
+        node: "emp_docs", op: "SELECT", edge: ["emp_docs", "attendance_leave"],
+        text: `🎓 Enrolled ${name} into Mandatory Compliance Induction (POSH & Ethics Track)`,
+      }] : []),
+      ...(onboardBiometric ? [{
+        node: "attendance_leave", op: "SELECT", edge: ["attendance_leave", "emp_docs"],
+        text: `👆 Registered Biometric IoT punch sensor profile for ${name}`,
+      }] : []),
+      ...(onboardStatutory ? [{
+        node: "payroll", op: "SELECT", edge: ["payroll", "emp_docs"],
+        text: `💳 Initialized Statutory Payroll ledger (PF 12% + Standard TDS) for ${name}`,
+      }] : []),
+      {
+        node: "finance_ledger", op: "INSERT", edge: ["finance_ledger", "budget"], alert: true,
+        text: `💸 Onboarding cost booked — ${fmtINR(gate.onboarding.total)} for ${name}: ${gate.onboarding.heads.map(h => `${h.label} ${fmtINR(h.amount)}`).join(", ")}.`,
+        row: onboardingLedger,
+      },
+      ...(budgetUpdate ? [{
+        node: "budget", op: "UPDATE",
+        text: `🏦 ${dept} budget drawn down. Envelope ${fmtINR(gate.budget?.annualBudget || 0)} · committed run-rate ${fmtINR((gate.budget?.totalCommitted || 0) + gate.roi.cost.total)} · uncommitted ${fmtINR((gate.budget?.available || 0) - gate.firstYearDraw)}. Headcount ${(gate.budget?.headcount || 0) + 1}/${gate.budget?.sanctioned || 0} sanctioned.`,
+        row: budgetUpdate,
+      }] : []),
+      {
+        node: "finance_ledger", op: "SELECT", edge: ["finance_ledger", "emp_docs"],
+        text: `📊 P&L verdict for ${name} (${designation}) — annual cost ${fmtINR(gate.roi.cost.total)} (salary ${fmtINR(gate.roi.cost.baseSalary)} + statutory ${fmtINR(gate.roi.cost.statutory)} + overhead ${fmtINR(gate.roi.cost.overhead)}) vs modelled output ${fmtINR(gate.roi.annualValue)}. Steady-state margin ${fmtINR(gate.roi.steadyMargin)}/yr → ${gate.roi.verdict.toUpperCase()}. Year one nets ${fmtINR(gate.roi.year1Net)} after onboarding and ${gate.roi.rampUpLoss > 0 ? `${fmtINR(gate.roi.rampUpLoss)} ramp-up drag` : "no ramp-up drag"}; breaks even in ~${gate.roi.breakEvenMonths ?? "—"} months.`,
+      },
+      ...(matchingVacancy ? [{
+        node: "attrition", op: "UPDATE", edge: ["attrition", "emp_docs"],
+        text: `✅ Vacancy ${matchingVacancy.id} closed by external hire after ${matchingVacancy.daysOpen} day(s) open. Realised output loss during the gap: ${fmtINR(matchingVacancy.cumulativeLoss)}.`,
+        row: { id: matchingVacancy.id, status: "Filled (External)", filledOn: today, filledBy: name, fillMode: "External Hire", realisedLoss: matchingVacancy.cumulativeLoss },
+      }] : []),
     ]);
   }
 
@@ -845,19 +1704,22 @@ export default function ModuleSimulation() {
       const travelAllowanceAmt = Math.round(reqDays * 1000);
       const fmt = (n) => Number(n).toLocaleString("en-IN");
       const allowanceRow = {
-        id: nextId("SA"),
+        id: nextId("CMP"),
         emp: req.emp,
-        type: req.isHalfDay || reqDays === 0.5 ? "Travel / Client Visit (Half-Day)" : "Travel / Per Diem Allowance",
+        type: "Allowance",
+        subType: req.isHalfDay || reqDays === 0.5 ? "Travel / Client Visit (Half-Day)" : "Travel / Per Diem Allowance",
         amount: `Rs.${fmt(travelAllowanceAmt)}`,
+        amountNum: travelAllowanceAmt,
         period: "Current Cycle",
         reason: `On-Duty Trip: ${req.purpose || "Client Visit"} (${req.dates})`,
-        status: "Approved"
+        status: "Approved",
+        bonusDisbursed: false
       };
 
       execute([
         { node: "emp_docs", op: "SELECT", text: `Verifying employment status for ${req.emp}` },
         { node: "attendance_leave", op: "UPDATE", edge: ["attendance_leave", "emp_docs"], text: `✈️ On-Duty Travel Approved: ${reqDays} day(s) for ${req.emp} (0 leaves deducted, 100% paid attendance)`, row: updatedReq },
-        { node: "special_allowances", op: "INSERT", edge: ["special_allowances", "emp_docs"], text: `💰 Travel Allowance Credited: Rs.${fmt(travelAllowanceAmt)} for ${req.emp} (${reqDays === 0.5 ? "Rs.500 prorated for Half-Day" : "Rs.1,000/day"})`, row: allowanceRow },
+        { node: "comp_incentives", op: "INSERT", edge: ["comp_incentives", "emp_docs"], text: `💰 Travel Allowance Credited: Rs.${fmt(travelAllowanceAmt)} for ${req.emp} (${reqDays === 0.5 ? "Rs.500 prorated for Half-Day" : "Rs.1,000/day"})`, row: allowanceRow },
         { node: "attendance_leave", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your On-Duty Travel (${reqDays}d) is approved with Rs.${fmt(travelAllowanceAmt)} Travel Allowance!` }
       ]);
       return;
@@ -936,15 +1798,15 @@ export default function ModuleSimulation() {
     ];
 
     if (isOnDuty) {
-      // Void travel allowance in special_allowances
-      const travelAllowance = (db.special_allowances || []).find(sa =>
-        sa.emp === req.emp && sa.status === "Approved" && (sa.reason?.includes(req.dates) || sa.type?.includes("Travel"))
+      // Void travel allowance in comp_incentives
+      const travelAllowance = (db.comp_incentives || []).find(sa =>
+        sa.emp === req.emp && sa.status === "Approved" && (sa.reason?.includes(req.dates) || sa.subType?.includes("Travel") || sa.type?.includes("Travel"))
       );
       if (travelAllowance) {
         steps.push({
-          node: "special_allowances",
+          node: "comp_incentives",
           op: "UPDATE",
-          edge: ["special_allowances", "attendance_leave"],
+          edge: ["comp_incentives", "attendance_leave"],
           text: `🚫 Travel Allowance Voided: ${travelAllowance.amount || "Rs.1,000"} cancelled for ${req.emp} due to trip cancellation`,
           row: { ...travelAllowance, status: "Voided (Trip Cancelled)" },
           alert: true
@@ -1020,20 +1882,23 @@ export default function ModuleSimulation() {
     const updatedReq = { ...req, status: "Approved" };
 
     const allowanceRow = {
-      id: nextId("SA"),
+      id: nextId("CMP"),
       emp: req.emp,
-      type: req.claimCategory || "Expense Reimbursement",
+      type: "Reimbursement",
+      subType: req.claimCategory || "Expense Reimbursement",
       amount: `Rs.${fmt(amt)}`,
+      amountNum: amt,
       period: "Current Cycle",
       reason: `ESS Reimbursement: ${req.claimCategory || "Expense"} (${req.details || ""})`,
-      status: "Approved"
+      status: "Approved",
+      bonusDisbursed: false
     };
 
     execute([
       { node: "emp_docs", op: "SELECT", text: `Verifying employment record for ${req.emp}` },
-      { node: "special_allowances", op: "INSERT", edge: ["special_allowances", "emp_docs"], text: `💰 Reimbursement Approved: Rs.${fmt(amt)} for ${req.emp} added to Special Allowances (Disbursable in Payroll)`, row: allowanceRow },
-      { node: "ess", op: "UPDATE", edge: ["ess", "special_allowances"], text: `ESS Reimbursement Claim Approved: ${req.id} for ${req.emp}`, row: updatedReq },
-      { node: "special_allowances", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your reimbursement claim of Rs.${fmt(amt)} was approved and credited to Special Allowances for next payroll payout!` }
+      { node: "comp_incentives", op: "INSERT", edge: ["comp_incentives", "emp_docs"], text: `💰 Reimbursement Approved: Rs.${fmt(amt)} for ${req.emp} added to Compensation & Incentives (Disbursable in Payroll)`, row: allowanceRow },
+      { node: "ess", op: "UPDATE", edge: ["ess", "comp_incentives"], text: `ESS Reimbursement Claim Approved: ${req.id} for ${req.emp}`, row: updatedReq },
+      { node: "comp_incentives", op: "SELECT", text: `🔔 Notification sent to ${req.emp}: Your reimbursement claim of Rs.${fmt(amt)} was approved and credited to Compensation & Incentives for next payroll payout!` }
     ]);
   }
 
@@ -1302,7 +2167,7 @@ export default function ModuleSimulation() {
     ]);
   }
 
-  // ── Nominate Award Modal & Confirmation ────────────────────────────────────
+  // ── Compensation & Incentives Modal & Confirmation ─────────────────────────
   const AWARD_REWARDS = {
     "Star Performer": 5000,
     "Innovation Champion": 3500,
@@ -1311,11 +2176,11 @@ export default function ModuleSimulation() {
     "Spot Excellence Award": 1500,
   };
 
-  function actionNominateAward() {
+  function actionCompIncentives(initialTab = "award") {
     const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
-    if (!activeEmps.length) { pushLog("WARN", "excellence_awards", "No active employees to nominate."); return; }
+    if (!activeEmps.length) { pushLog("WARN", "comp_incentives", "No active employees found."); return; }
     const firstEmp = activeEmps[0];
-    const perfRecords = db.performance.filter(r => r.emp === firstEmp.name);
+    const perfRecords = (db.performance || []).filter(r => r.emp === firstEmp.name);
     const latest = perfRecords.length ? perfRecords[perfRecords.length - 1] : null;
     let defCat = "Team Player";
     if (latest?.rating === "Outstanding") defCat = "Star Performer";
@@ -1323,12 +2188,20 @@ export default function ModuleSimulation() {
     else if (latest?.rating === "Meets Expectations") defCat = "Team Player";
 
     setModal({
-      type: "award",
+      type: "comp_incentives",
+      subTab: initialTab || "award",
       empId: firstEmp.id,
       category: defCat,
       period: "Q3 FY2026",
       cashReward: AWARD_REWARDS[defCat] || 2000,
+      allowanceType: "LTA (Leave Travel Allowance)",
+      amount: 5000,
+      fiscalYear: 2026
     });
+  }
+
+  function actionNominateAward() {
+    actionCompIncentives("award");
   }
 
   function confirmNominateAward() {
@@ -1336,29 +2209,33 @@ export default function ModuleSimulation() {
 
     // Rule: An employee can only be nominated once per cycle
     const cyclePeriod = modal.period || "Q3 FY2026";
-    const alreadyNominated = (db.awards || []).some(
-      a => a.emp === emp.name && a.period === cyclePeriod
+    const alreadyNominated = (db.comp_incentives || []).some(
+      a => a.emp === emp.name && a.period === cyclePeriod && (a.type === "Award" || a.category?.includes("Award"))
     );
     if (alreadyNominated) {
-      pushLog("WARN", "excellence_awards", `Nomination rejected — ${emp.name} is already nominated for an award in ${cyclePeriod}. Only one nomination per cycle is permitted.`);
+      pushLog("WARN", "comp_incentives", `Nomination rejected — ${emp.name} is already nominated for an award in ${cyclePeriod}. Only one nomination per cycle is permitted.`);
       setModal(null);
       return;
     }
 
-    const perfRecords = db.performance.filter(r => r.emp === emp.name);
+    const perfRecords = (db.performance || []).filter(r => r.emp === emp.name);
     const latest = perfRecords.length ? perfRecords[perfRecords.length - 1] : null;
     const rating = latest ? latest.rating : "Direct Spot Nomination";
     const kpi = latest ? latest.kpiScore : "—";
     const rewardAmt = modal.cashReward || AWARD_REWARDS[modal.category] || 2000;
     const fmt = (n) => Number(n).toLocaleString("en-IN");
     const row = {
-      id: nextId("AWD"),
+      id: nextId("CMP"),
       emp: emp.name,
+      type: "Award",
       category: modal.category,
+      subType: modal.category,
       rating,
       kpi,
       period: modal.period || "Q3 FY2026",
+      amount: `Rs.${fmt(rewardAmt)}`,
       reward: `Rs.${fmt(rewardAmt)}`,
+      amountNum: rewardAmt,
       status: "Nominated",
       bonusDisbursed: false,
     };
@@ -1369,16 +2246,16 @@ export default function ModuleSimulation() {
     ];
     if (latest) {
       steps.push({
-        node: "performance", op: "SELECT", edge: ["awards", "performance"],
+        node: "performance", op: "SELECT", edge: ["comp_incentives", "performance"],
         text: `Appraisal verified for ${emp.name} | Rating: ${rating} | KPI: ${kpi}`
       });
     }
     steps.push({
-      node: "awards", op: "INSERT", edge: ["awards", "emp_docs"],
+      node: "comp_incentives", op: "INSERT", edge: ["comp_incentives", "emp_docs"],
       text: `Nominating ${emp.name} for "${modal.category}" | Cash Reward Rs.${fmt(rewardAmt)}`, row
     });
     steps.push({
-      node: "awards", op: "SELECT",
+      node: "comp_incentives", op: "SELECT",
       text: `🎉 Notification sent to ${emp.name}: Nominated for ${modal.category} with Rs.${fmt(rewardAmt)} bonus!`
     });
     execute(steps);
@@ -1440,6 +2317,7 @@ export default function ModuleSimulation() {
   }
 
   function executeRunPayroll(targetMonth = "Oct 2026", mode = "standard", maxMonthDays = null) {
+    const fmt = (n) => (Number(n) || 0).toLocaleString("en-IN");
     const steps = [];
     const PAID_LEAVE_TYPES = ["Annual Leave", "Sick Leave", "Casual Leave", "Maternity Leave", "Paternity Leave", "Comp Off", "On-Duty (OD) / Business Travel"];
 
@@ -1455,8 +2333,16 @@ export default function ModuleSimulation() {
       // Guard 1: Exclude archived / inactive employees
       if (e.status.includes("Inactive")) return false;
 
-      // Guard 2: Exclude employees who already received their Full & Final (F&F) Settlement
-      const hasFF = (db.payroll || []).some(p => p.emp === e.name && p.payrollMode === "Full & Final Settlement");
+      // Guard 2: Exclude employees who already received their Full & Final (F&F) Settlement for this cycle.
+      // If the employee is Active with no exit date (e.g. re-hired/re-joined), past F&F from previous months only block their exit month.
+      const hasFF = (db.payroll || []).some(p => {
+        if (p.emp !== e.name || p.payrollMode !== "Full & Final Settlement") return false;
+        if (e.status === "Active" && !e.exit_date && monthPrefix) {
+          const ffMonthPrefix = (p.exitDate || p.month || "").slice(0, 7);
+          return ffMonthPrefix === monthPrefix;
+        }
+        return true;
+      });
       if (hasFF) return false;
 
       // Guard 3: Exclude employees whose notice period ended before this payroll cycle
@@ -1573,26 +2459,24 @@ export default function ModuleSimulation() {
       const dailyRate = emp.dailyRate || (emp.designation ? DESIGNATION_RATES[emp.designation] : 1000) || 1000;
       const baseGross = billableDays * dailyRate;
 
-      const empAllowances = db.special_allowances.filter(sa =>
-        sa.emp === emp.name && (sa.status === "Approved" || (sa.status === "Disbursed" && sa.disbursedMonth === targetMonth))
+      // Compensation & Incentives Logic (Unified Allowances + Awards)
+      const empIncentives = (db.comp_incentives || []).filter(ci =>
+        ci.emp === emp.name && (ci.status === "Approved" || ci.status === "Nominated" || (!ci.bonusDisbursed && ci.status !== "Rejected") || ci.disbursedMonth === targetMonth)
       );
-      const totalAllowances = empAllowances.reduce((sum, sa) => {
-        const amountStr = String(sa.amount).replace(/[^\d]/g, '');
-        return sum + Number(amountStr);
-      }, 0);
-
-      // Award Bonus Logic
-      const empAwards = (db.awards || []).filter(a =>
-        a.emp === emp.name && (a.bonusDisbursed !== true || a.disbursedMonth === targetMonth)
-      );
+      let totalAllowances = 0;
       let awardBonus = 0;
       let awardLabel = "";
-      if (empAwards.length > 0) {
-        empAwards.forEach(a => {
-          const amt = Number(String(a.reward || "0").replace(/[^\d]/g, '')) ||
-            (AWARD_REWARDS[a.category] || 1500);
+      empIncentives.forEach(ci => {
+        const amt = Number(String(ci.amount || ci.reward || "0").replace(/[^\d]/g, '')) ||
+          (AWARD_REWARDS[ci.category] || AWARD_REWARDS[ci.subType] || 0);
+        if (ci.type === "Award" || ci.category?.includes("Award") || ci.subType?.includes("Award") || AWARD_REWARDS[ci.category] || AWARD_REWARDS[ci.subType]) {
           awardBonus += amt;
-        });
+        } else {
+          totalAllowances += amt;
+        }
+      });
+      if (awardBonus > 0) {
+        awardLabel = ` (+Rs.${fmt(awardBonus)} award)`;
       }
 
       // Performance Bonus Logic
@@ -1632,8 +2516,6 @@ export default function ModuleSimulation() {
       const emiShortfall = loanEmiSum > netAvailable ? loanEmiSum - netAvailable : 0;
       const actualEmiDeducted = Math.min(loanEmiSum, netAvailable);
       const net = Math.max(0, netAvailable - actualEmiDeducted);
-      const fmt = (n) => n.toLocaleString("en-IN");
-      if (awardBonus > 0) awardLabel = ` (+Rs.${fmt(awardBonus)} award)`;
       const emiLabel = loanEmiSum > 0 ? ` | Loan EMI -Rs.${fmt(actualEmiDeducted)}${emiShortfall > 0 ? ` (⚠️ Arrears Shortfall: Rs.${fmt(emiShortfall)})` : ""}` : "";
 
       steps.push({ node: "emp_docs", op: "SELECT", text: `Reading salary structure for ${emp.name}` });
@@ -1706,17 +2588,22 @@ export default function ModuleSimulation() {
         });
       }
 
-      if (empAllowances.length > 0) {
-        steps.push({ node: "special_allowances", op: "SELECT", edge: ["payroll", "special_allowances"], text: `Applying special allowances for ${emp.name}` });
-        empAllowances.forEach(sa => {
-          steps.push({ node: "special_allowances", op: "UPDATE", edge: ["special_allowances", "payroll"], text: `Marking ${sa.type} as Disbursed (${targetMonth})`, row: { ...sa, status: "Disbursed", disbursedMonth: targetMonth } });
+      if (empIncentives.length > 0) {
+        steps.push({
+          node: "comp_incentives",
+          op: "SELECT",
+          edge: ["payroll", "comp_incentives"],
+          text: `Applying Compensation & Incentives for ${emp.name} (Rs.${fmt(totalAllowances + awardBonus)} total)`
         });
-      }
-
-      if (awardBonus > 0 && empAwards.length > 0) {
-        steps.push({ node: "awards", op: "SELECT", edge: ["payroll", "awards"], text: `Applying award bonuses for ${emp.name}` });
-        empAwards.forEach(a => {
-          steps.push({ node: "awards", op: "UPDATE", edge: ["awards", "payroll"], text: `Marking ${a.category} reward as Disbursed (${targetMonth})`, row: { ...a, status: "Disbursed", bonusDisbursed: true, disbursedMonth: targetMonth } });
+        empIncentives.forEach(ci => {
+          const itemTitle = ci.subType || ci.type || ci.category || "Incentive";
+          steps.push({
+            node: "comp_incentives",
+            op: "UPDATE",
+            edge: ["comp_incentives", "payroll"],
+            text: `Marking ${itemTitle} as Disbursed (${targetMonth})`,
+            row: { ...ci, status: "Disbursed", bonusDisbursed: true, disbursedMonth: targetMonth }
+          });
         });
       }
 
@@ -1747,15 +2634,7 @@ export default function ModuleSimulation() {
 
   // ── Add Allowance ──────────────────────────────────────────────────────────
   function actionAddAllowance() {
-    const activeEmps = db.emp_docs.filter(e => !e.status.includes("Inactive"));
-    if (!activeEmps.length) { pushLog("WARN", "special_allowances", "No active employees to add allowance for."); return; }
-    setModal({
-      type: "allowance",
-      empId: activeEmps[0].id,
-      allowanceType: "LTA (Leave Travel Allowance)",
-      amount: 5000,
-      fiscalYear: 2026
-    });
+    actionCompIncentives("allowance");
   }
   function confirmAddAllowance() {
     if (running || !checkNetworkOrWarn()) return;
@@ -1764,13 +2643,24 @@ export default function ModuleSimulation() {
     const fmt = (n) => Number(n).toLocaleString("en-IN");
     const fy = Number(modal.fiscalYear) || 2026;
     const period = `FY${fy}–${String(fy + 1).slice(2)}`;
-    const row = { id: nextId("SA"), emp: emp.name, type: modal.allowanceType, amount: `Rs.${fmt(amt)}`, period, fiscalYear: fy, status: "Approved" };
+    const row = {
+      id: nextId("CMP"),
+      emp: emp.name,
+      type: "Allowance",
+      subType: modal.allowanceType,
+      amount: `Rs.${fmt(amt)}`,
+      amountNum: amt,
+      period,
+      fiscalYear: fy,
+      status: "Approved",
+      bonusDisbursed: false
+    };
     setModal(null);
     execute([
       { node: "emp_docs", op: "SELECT", text: `Verifying allowance eligibility & budget allocation for ${emp.name}` },
-      { node: "payroll", op: "SELECT", edge: ["special_allowances", "payroll"], text: `Reading ${period} payroll base and statutory caps for ${emp.name}` },
-      { node: "special_allowances", op: "INSERT", edge: ["special_allowances", "emp_docs"], text: `💰 Special Allowance Authorized: ${modal.allowanceType} of Rs.${fmt(amt)} (${period}) for ${emp.name} (Annual Disbursement)`, row, alert: true },
-      { node: "special_allowances", op: "SELECT", text: `🔔 Notification sent to ${emp.name}: Your ${modal.allowanceType} of Rs.${fmt(amt)} for ${period} has been authorized and queued for payroll disbursement.` }
+      { node: "payroll", op: "SELECT", edge: ["comp_incentives", "payroll"], text: `Reading ${period} payroll base and statutory caps for ${emp.name}` },
+      { node: "comp_incentives", op: "INSERT", edge: ["comp_incentives", "emp_docs"], text: `💰 Special Allowance Authorized: ${modal.allowanceType} of Rs.${fmt(amt)} (${period}) for ${emp.name} (Disbursable in Payroll)`, row, alert: true },
+      { node: "comp_incentives", op: "SELECT", text: `🔔 Notification sent to ${emp.name}: Your ${modal.allowanceType} of Rs.${fmt(amt)} for ${period} has been authorized and queued for payroll disbursement.` }
     ]);
   }
 
@@ -1890,7 +2780,7 @@ export default function ModuleSimulation() {
       const amt = Number(modal.claimAmount) || 1200;
       const cat = modal.claimCategory || "Local Conveyance / Travel";
       detailStr = `${cat} — Rs.${amt.toLocaleString("en-IN")}`;
-      targetNode = "special_allowances";
+      targetNode = "comp_incentives";
       status = "Pending HR Approval";
       stepLog = `Filing expense reimbursement claim (Rs.${amt.toLocaleString("en-IN")}) for ${emp.name}`;
     } else if (modal.req === "HR & IT Helpdesk" || modal.req === "IT Declaration Submission") {
@@ -2038,7 +2928,7 @@ export default function ModuleSimulation() {
   }
   function confirmTransfer() {
     const emp = db.emp_docs.find(e => e.id === modal.empId); if (!emp) return;
-    const oldDept = emp.dept;
+    const oldDept = emp.dept || emp.department;
     const newDept = modal.newDept;
 
     // Rule: Target department must be different from current department
@@ -2048,11 +2938,28 @@ export default function ModuleSimulation() {
       return;
     }
 
+    // Rule: One Director per department maximum
+    if ((emp.designation || emp.desig || "").toLowerCase().includes("director")) {
+      const existingDirector = (db.emp_docs || []).find(e =>
+        (e.department === newDept || e.dept === newDept) &&
+        e.id !== emp.id &&
+        !e.status?.includes("Inactive") &&
+        (e.designation || e.desig || "").toLowerCase().includes("director")
+      );
+      if (existingDirector) {
+        pushLog("WARN", "emp_docs", `Cannot transfer Director. ${newDept} already has an active Director (${existingDirector.name}). A department can only have one Director.`);
+        setModal(null);
+        return;
+      }
+    }
+
     const transferReason = modal.transferReason || "Project Reallocation";
     const effectiveDate = modal.transferEffectiveDate || getLocalDateStr();
     const updatedEmp = {
+      ...emp,
       id: emp.id,
       dept: newDept,
+      department: newDept,
       previous_dept: oldDept,
       transfer_reason: transferReason,
       transfer_date: effectiveDate
@@ -2126,6 +3033,21 @@ export default function ModuleSimulation() {
       return;
     }
 
+    // Rule: One Director per department maximum
+    if (modal.newDesig.toLowerCase().includes("director")) {
+      const existingDirector = (db.emp_docs || []).find(e =>
+        (e.department === emp.dept || e.dept === emp.dept) &&
+        e.id !== emp.id &&
+        !e.status?.includes("Inactive") &&
+        (e.designation || e.desig || "").toLowerCase().includes("director")
+      );
+      if (existingDirector) {
+        pushLog("WARN", "emp_docs", `Cannot promote to Director. ${emp.dept || emp.department} already has an active Director (${existingDirector.name}). A department can only have one Director.`);
+        setModal(null);
+        return;
+      }
+    }
+
     // Rule: Require at least one completed performance appraisal cycle on file (Item 2.3)
     const perfRecords = db.performance.filter(r => r.emp === emp.name);
     if (perfRecords.length === 0) {
@@ -2185,6 +3107,8 @@ export default function ModuleSimulation() {
     const alreadyPaid = (db.payroll || []).some(p => p.emp === targetEmp.name && p.month === exitMonthStr && p.payrollMode !== "Full & Final Settlement");
     const defaultWorkingDays = alreadyPaid ? 0 : wdInfo.workingDays;
 
+    setOffboardChecklist(computeAutoOffboardChecklist(targetEmp.id));
+
     setModal({
       type: "offboard",
       empId: targetEmp.id,
@@ -2197,10 +3121,43 @@ export default function ModuleSimulation() {
   async function confirmOffboard() {
     if (running || !checkNetworkOrWarn()) return;
     const emp = db.emp_docs.find(e => e.id === modal.empId); if (!emp) return;
-    const exitReason = modal.reason;
-    const exitDate = modal.exitDate;
+    const exitReason = modal.reason || "Resignation";
+    const exitDate = modal.exitDate || getLocalDateStr();
     const separationMode = modal.separationMode || "final_clearance";
+    const modalWorkingDays = modal.workingDays;
     setModal(null);
+
+    // Trigger visual flowchart deprovisioning animation
+    setChartAnim({
+      active: true,
+      type: "OFFBOARD",
+      empId: emp.id,
+      empName: emp.name,
+      empDesig: emp.designation || emp.desig,
+      dept: emp.department || emp.dept,
+      stage: 1,
+      message: `⚠️ Deprovisioning Alert: Offboarding initiated for ${emp.name} in ${emp.department || emp.dept}...`
+    });
+
+    setTimeout(() => {
+      setChartAnim(prev => ({
+        ...prev,
+        stage: 2,
+        message: `🔄 Manager Handover & Asset Recovery: Revoking IT assets, credentials & biometric access`
+      }));
+    }, 800);
+
+    setTimeout(() => {
+      setChartAnim(prev => ({
+        ...prev,
+        stage: 3,
+        message: `🔒 Separation Completed: ${emp.name} deprovisioned & archived on org chart`
+      }));
+    }, 1800);
+
+    setTimeout(() => {
+      setChartAnim({ active: false, type: null, empId: "", empName: "", empDesig: "", dept: "", stage: 0, message: "" });
+    }, 4500);
 
     // ── Mode A: Notice Period Scheduled (Employee remains active for Oct/Nov payroll) ──
     if (separationMode === "notice") {
@@ -2224,8 +3181,8 @@ export default function ModuleSimulation() {
 
     // ── Mode B: Final Day Clearance & F&F Settlement ──
     const wdInfo = getWorkingDaysInMonthUpToDate(exitDate);
-    const workedDays = (typeof modal.workingDays === "number" && !isNaN(modal.workingDays) && modal.workingDays >= 0)
-      ? modal.workingDays
+    const workedDays = (typeof modalWorkingDays === "number" && !isNaN(modalWorkingDays) && modalWorkingDays >= 0)
+      ? modalWorkingDays
       : wdInfo.workingDays;
 
     const steps = [];
@@ -2384,6 +3341,110 @@ export default function ModuleSimulation() {
       alert: true
     });
 
+    /* ── Finance & attrition consequences of the exit ──────────────────────
+       The settlement above is only the visible cost. What follows is the part
+       the business actually feels: the vacancy, the lost output, and — if this
+       was a manager — the leadership gap until someone steps up. */
+    const twin = twinByEmpId[emp.id];
+    const empDept = emp.department || emp.dept;
+    const empDesig = emp.designation || emp.desig || "Associate";
+    const tenureMonths = monthsBetween(emp.joined, exitDate);
+    const stillActive = (db.emp_docs || []).filter(e => e.id !== emp.id && !e.status?.includes("Inactive"));
+    const successors = findReplacementCandidates(emp, stillActive, ratingOf);
+    const isMgr = /manager|director|lead/i.test(empDesig);
+    const loss = twin ? twin.loss : attritionLossModel(emp, {
+      tenureMonths, isManager: isMgr,
+      teamSize: stillActive.filter(e => (e.department || e.dept) === empDept).length,
+      internalSuccessor: successors.length > 0,
+    });
+    const roiAtExit = employeeROIModel(emp, exitDate);
+
+    const exitRow = {
+      id: nextId("EXIT"),
+      type: "Exit",
+      emp: emp.name,
+      dept: empDept,
+      grade: empDesig,
+      exitDate,
+      reason: exitReason,
+      tenureMonths,
+      attritionLoss: loss.total,
+      lifetimeNet: roiAtExit.netToDate,
+      wasManager: isMgr,
+      successorAvailable: successors.length > 0,
+      riskScoreAtExit: twin ? twin.risk.score : null,
+      status: "Completed",
+    };
+
+    const exitLedger = ledgerRow({
+      dept: empDept, category: "Attrition Loss", subCategory: exitReason, emp: emp.name,
+      amount: loss.total,
+      note: loss.heads.map(h => `${h.label} ${fmtINR(h.amount)}`).join(" · "),
+    });
+
+    const g = gradeEcon(empDesig);
+    const vacancyRow = {
+      id: nextId("VAC"),
+      type: "Vacancy",
+      dept: empDept,
+      grade: empDesig,
+      openedOn: exitDate,
+      reason: `Backfill — ${exitReason}`,
+      causedBy: `${emp.name} exited on ${exitDate}`,
+      status: "Open",
+      dailyLoss: Math.round(g.annualValue / 365),
+      expectedDaysToFill: successors.length ? Math.min(12, g.daysToFill) : g.daysToFill,
+      wasManagerSeat: isMgr,
+    };
+
+    steps.push({
+      node: "attrition", op: "INSERT", edge: ["attrition", "emp_docs"], alert: true,
+      text: `📉 Attrition booked — ${emp.name} (${empDesig}, ${empDept}) after ${tenureMonths} month(s). Modelled cost of this exit: ${fmtINR(loss.total)} — ${loss.heads.map(h => `${h.label} ${fmtINR(h.amount)}`).join(", ")}.`,
+      row: exitRow,
+    });
+    steps.push({
+      node: "finance_ledger", op: "INSERT", edge: ["finance_ledger", "budget"],
+      text: `📒 Ledger: ${fmtINR(loss.total)} attrition loss charged to ${empDept}. Lifetime contribution of this employee to date: ${fmtINR(roiAtExit.netToDate)} (${roiAtExit.netToDate >= 0 ? "recovered their hiring investment" : "left before recovering the hiring investment"}).`,
+      row: exitLedger,
+    });
+    steps.push({
+      node: "attrition", op: "INSERT", edge: ["attrition", "budget"], alert: true,
+      text: `🪑 Vacancy ${vacancyRow.id} opened — ${empDesig} seat in ${empDept} now empty. Carrying cost ${fmtINR(vacancyRow.dailyLoss)}/day of forgone output; expected ${vacancyRow.expectedDaysToFill} days to fill${successors.length ? " with an internal successor" : " via external hiring"}.`,
+      row: vacancyRow,
+    });
+
+    const budgetUpdateExit = chargeBudget(empDept, loss.total);
+    if (budgetUpdateExit) {
+      steps.push({
+        node: "budget", op: "UPDATE",
+        text: `🏦 ${empDept} budget absorbs ${fmtINR(loss.total)} of attrition cost. Salary run-rate frees up ${fmtINR(roiAtExit.cost.total)}/yr, but the seat now produces nothing until refilled.`,
+        row: budgetUpdateExit,
+      });
+    }
+
+    // Succession: when a leader leaves, the strongest same-team candidate steps up.
+    if (isMgr) {
+      const heir = successors[0];
+      if (heir) {
+        const heirDesig = heir.emp.designation || heir.emp.desig;
+        const actingRate = DESIGNATION_RATES[empDesig] || heir.emp.dailyRate;
+        steps.push({
+          node: "emp_docs", op: "UPDATE", edge: ["emp_docs", "attrition"], alert: true,
+          text: `👑 Succession triggered — ${heir.emp.name} (${heirDesig}, appraisal "${ratingOf(heir.emp.name) || "unrated"}") is the closest-grade successor and takes charge of ${empDept} as Acting ${empDesig}. Leadership gap closed in ${vacancyRow.expectedDaysToFill} days instead of ${g.daysToFill}.`,
+          row: { id: heir.emp.id, actingRole: `Acting ${empDesig} — ${empDept}`, successionFor: emp.name, actingSince: exitDate },
+        });
+        steps.push({
+          node: "attrition", op: "SELECT",
+          text: `🧭 Succession plan: confirm ${heir.emp.name} into the ${empDesig} grade from the Finance Control Tower to make the move permanent (run-rate impact ${fmtINR(Math.round((actingRate - (Number(heir.emp.dailyRate) || 0)) * 30 * 12 * (1 + STATUTORY_LOAD)))}/yr), or run an external search.`,
+        });
+      } else {
+        steps.push({
+          node: "attrition", op: "SELECT", alert: true,
+          text: `⚠️ No internal successor found for the ${empDesig} seat in ${empDept} — no same-grade peer and no promotable junior with a clean appraisal. This department is now leaderless, which raises flight risk for everyone still in it.`,
+        });
+      }
+    }
+
     await execute(steps);
 
     // Present the official Full & Final Settlement & No-Dues Statement
@@ -2413,6 +3474,613 @@ export default function ModuleSimulation() {
     });
   }
 
+  // ── Workforce Digital Twin & "What-If" Memos & Handlers ───────────────────────
+  const activeEmpsList = useMemo(() => {
+    return (db.emp_docs || []).filter(e => !e.status?.includes("Inactive"));
+  }, [db.emp_docs]);
+
+
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     FINANCE CONTROL TOWER — DERIVED STATE
+     Every number below is recomputed from the live tables. Nothing here is
+     stored twice, so the twin can never drift out of sync with the HRMS.
+     ═══════════════════════════════════════════════════════════════════════════ */
+
+  const todayStr = getLocalDateStr();
+
+  /** Latest appraisal rating on file for an employee, or null. */
+  const ratingOf = useCallback((empName) => {
+    const recs = (db.performance || []).filter(r => r.emp === empName);
+    return recs.length ? recs[recs.length - 1].rating : null;
+  }, [db.performance]);
+
+  /** Employees currently away on an approved leave that spans today. */
+  const onLeaveToday = useMemo(() => {
+    return (db.attendance_leave || []).filter(r =>
+      r.status === "Approved" && r.dates !== "Balance" && r.startDate && r.endDate &&
+      r.startDate <= todayStr && r.endDate >= todayStr
+    );
+  }, [db.attendance_leave, todayStr]);
+
+  const onLeaveNames = useMemo(() => new Set(onLeaveToday.map(r => r.emp)), [onLeaveToday]);
+
+  /**
+   * The heart of the twin: one fully-modelled record per active employee,
+   * combining cost, value, flight risk and the price of losing them.
+   */
+  const workforceTwin = useMemo(() => {
+    const active = (db.emp_docs || []).filter(e => !e.status?.includes("Inactive"));
+
+    // Pre-compute department-level structural signals once.
+    const deptStats = {};
+    DEPT_POOL.forEach(d => {
+      const staff = active.filter(e => (e.department === d || e.dept === d));
+      const hasManager = staff.some(e => {
+        const t = (e.designation || e.desig || "").toLowerCase();
+        return t.includes("manager") || t.includes("director") || t.includes("lead");
+      });
+      const sanctioned = DEPT_BUDGET_PLAN[d]?.sanctioned || 0;
+      deptStats[d] = {
+        staff, hasManager, sanctioned,
+        vacancyRate: sanctioned > 0 ? Math.max(0, (sanctioned - staff.length) / sanctioned) : 0,
+      };
+    });
+
+    return active.map(emp => {
+      const dept = emp.department || emp.dept;
+      const desig = emp.designation || emp.desig || "Associate";
+      const ds = deptStats[dept] || { staff: [], hasManager: true, vacancyRate: 0 };
+
+      const roi = employeeROIModel(emp, todayStr);
+      const rating = ratingOf(emp.name);
+
+      // Assemble the live behavioural + structural signals for the risk model.
+      const recentCutoff = getLocalDateStr(new Date(Date.now() - 90 * 86400000));
+      const recentLeaveDays = (db.attendance_leave || [])
+        .filter(r => r.emp === emp.name && r.dates !== "Balance" && r.status === "Approved" &&
+          r.startDate && r.startDate >= recentCutoff)
+        .reduce((s, r) => s + (Number(r.days) || daysBetween(r.startDate, r.endDate) + 1), 0);
+
+      const openTickets = (db.ess || []).filter(r => r.emp === emp.name &&
+        (r.status?.includes("Pending") || r.status?.includes("Open") || r.status?.includes("Escalated"))).length;
+
+      const hasActiveLoan = (db.loans || []).some(l => l.emp === emp.name && l.status?.includes("Active"));
+      const awardsCount = (db.comp_incentives || []).filter(a => a.emp === emp.name && (a.type === "Award" || a.category?.includes("Award") || a.subType?.includes("Award"))).length;
+
+      const bandRate = DESIGNATION_RATES[desig] || 1000;
+      const compaRatio = bandRate > 0 ? (Number(emp.dailyRate) || bandRate) / bandRate : 1;
+
+      // Months since the last grade change — falls back to tenure if never promoted.
+      const monthsSinceGradeChange = (emp.monthsSinceLastPromotion !== undefined && emp.monthsSinceLastPromotion !== null)
+        ? Number(emp.monthsSinceLastPromotion)
+        : emp.lastGradeChange
+          ? monthsBetween(emp.lastGradeChange, todayStr)
+          : roi.tenureMonths;
+
+      const risk = flightRiskModel({
+        tenureMonths: roi.tenureMonths,
+        monthsSinceGradeChange,
+        compaRatio,
+        rating,
+        awardsCount,
+        recentLeaveDays,
+        openTickets,
+        hasActiveLoan,
+        deptHasManager: ds.hasManager,
+        deptVacancyRate: ds.vacancyRate,
+        onNotice: !!emp.status?.includes("Notice Period"),
+        attritionShock: scenario.attritionShockPct || 0,
+      });
+
+      const isManager = /manager|director|lead/i.test(desig);
+      const successors = findReplacementCandidates(emp, active, ratingOf);
+      const loss = attritionLossModel(emp, {
+        tenureMonths: roi.tenureMonths,
+        isManager,
+        teamSize: Math.max(0, ds.staff.length - 1),
+        internalSuccessor: successors.length > 0,
+      });
+
+      // Expected (probability-weighted) loss is what belongs in a risk provision.
+      const expectedLoss = Math.round((loss.total * risk.score) / 100);
+
+      return {
+        emp, dept, desig, roi, risk, loss, successors, isManager, rating,
+        compaRatio, monthsSinceGradeChange, expectedLoss,
+        onLeave: onLeaveNames.has(emp.name),
+        onNotice: !!emp.status?.includes("Notice Period"),
+      };
+    });
+  }, [db.emp_docs, db.performance, db.attendance_leave, db.ess, db.loans, db.comp_incentives, todayStr, ratingOf, onLeaveNames, scenario.attritionShockPct]);
+
+  const twinByEmpId = useMemo(
+    () => Object.fromEntries(workforceTwin.map(t => [t.emp.id, t])),
+    [workforceTwin]
+  );
+
+  /** Open vacancies raised by exits or transfers and not yet filled. */
+  const openVacancies = useMemo(() => {
+    return (db.attrition || [])
+      .filter(r => r.type === "Vacancy" && r.status === "Open")
+      .map(v => ({
+        ...v,
+        daysOpen: daysBetween(v.openedOn, todayStr),
+        cumulativeLoss: Math.round((Number(v.dailyLoss) || 0) * daysBetween(v.openedOn, todayStr)),
+      }));
+  }, [db.attrition, todayStr]);
+
+  /**
+   * Department budget ledger. Committed = annualised run-rate of people actually
+   * on the books today. Spent = one-time charges already booked this year.
+   */
+  const budgetModel = useMemo(() => {
+    const rows = (db.budget || []).length ? db.budget : seedBudgetRows();
+    return rows.map(b => {
+      const twins = workforceTwin.filter(t => t.dept === b.dept);
+      const headcount = twins.length;
+      const committed = twins.reduce((s, t) => s + t.roi.cost.total, 0);
+      const oneTimeSpent = Number(b.oneTimeSpent) || 0;
+      const totalCommitted = committed + oneTimeSpent;
+      const available = b.annualBudget - totalCommitted;
+      const utilisation = b.annualBudget > 0 ? totalCommitted / b.annualBudget : 0;
+
+      const vacant = Math.max(0, b.sanctioned - headcount);
+      const deptVacancies = openVacancies.filter(v => v.dept === b.dept);
+      const annualValue = twins.reduce((s, t) => s + t.roi.annualValue, 0);
+      const netPL = annualValue - totalCommitted;
+      const expectedAttritionLoss = twins.reduce((s, t) => s + t.expectedLoss, 0);
+
+      let status = "Within Budget";
+      if (utilisation > 1) status = "Over Budget";
+      else if (utilisation > 0.9) status = "Near Ceiling";
+      else if (headcount > b.sanctioned) status = "Headcount Breach";
+
+      return {
+        ...b, headcount, vacant, committed, oneTimeSpent, totalCommitted,
+        available, utilisation, annualValue, netPL, status,
+        onLeave: twins.filter(t => t.onLeave).length,
+        onNotice: twins.filter(t => t.onNotice).length,
+        openVacancyCount: deptVacancies.length,
+        expectedAttritionLoss,
+        atRisk: twins.filter(t => t.risk.score >= 55).length,
+      };
+    });
+  }, [db.budget, workforceTwin, openVacancies]);
+
+  const budgetByDept = useMemo(
+    () => Object.fromEntries(budgetModel.map(b => [b.dept, b])),
+    [budgetModel]
+  );
+
+  /** Company-wide KPI roll-up shown in the control tower header strip. */
+  const workforceKPIs = useMemo(() => {
+    const totalSanctioned = budgetModel.reduce((s, b) => s + b.sanctioned, 0);
+    const headcount = workforceTwin.length;
+    const totalBudget = budgetModel.reduce((s, b) => s + b.annualBudget, 0);
+    const totalCommitted = budgetModel.reduce((s, b) => s + b.totalCommitted, 0);
+    const totalValue = budgetModel.reduce((s, b) => s + b.annualValue, 0);
+    const exits = (db.attrition || []).filter(r => r.type === "Exit");
+    const avgHeadcount = Math.max(1, (headcount + exits.length) / 2);
+
+    return {
+      headcount,
+      totalSanctioned,
+      vacant: Math.max(0, totalSanctioned - headcount),
+      openVacancies: openVacancies.length,
+      onLeave: workforceTwin.filter(t => t.onLeave).length,
+      onNotice: workforceTwin.filter(t => t.onNotice).length,
+      atRisk: workforceTwin.filter(t => t.risk.score >= 55 && !t.onNotice).length,
+      totalBudget,
+      totalCommitted,
+      available: totalBudget - totalCommitted,
+      utilisation: totalBudget > 0 ? totalCommitted / totalBudget : 0,
+      totalValue,
+      netPL: totalValue - totalCommitted,
+      profitable: workforceTwin.filter(t => t.roi.steadyMargin > 0).length,
+      lossMaking: workforceTwin.filter(t => t.roi.steadyMargin <= 0).length,
+      exitCount: exits.length,
+      attritionRate: exits.length / avgHeadcount,
+      attritionLossBooked: exits.reduce((s, r) => s + (Number(r.attritionLoss) || 0), 0),
+      retentionSpend: (db.finance_ledger || [])
+        .filter(r => r.category === "Retention")
+        .reduce((s, r) => s + (Number(r.amount) || 0), 0),
+      expectedLossProvision: workforceTwin.reduce((s, t) => s + t.expectedLoss, 0),
+    };
+  }, [budgetModel, workforceTwin, openVacancies, db.attrition, db.finance_ledger]);
+
+  /** Flight-risk watchlist, worst first — the accountant's intervention queue. */
+  const riskRegister = useMemo(() => {
+    return [...workforceTwin]
+      .filter(t => !t.onNotice)
+      .sort((a, b) => b.expectedLoss - a.expectedLoss || b.risk.score - a.risk.score);
+  }, [workforceTwin]);
+
+  /* ── What-if scenario engine ──────────────────────────────────────────────
+     Projects the same model forward under changed assumptions without ever
+     touching the real tables. This is the "test before you commit" use case. */
+  const scenarioResult = useMemo(() => {
+    const base = {
+      headcount: workforceKPIs.headcount,
+      cost: workforceKPIs.totalCommitted,
+      value: workforceKPIs.totalValue,
+      netPL: workforceKPIs.netPL,
+      expectedLoss: workforceKPIs.expectedLossProvision,
+    };
+
+    const hikeFactor = 1 + (scenario.blanketHikePct / 100);
+    let projCost = 0, projValue = 0, projExpectedLoss = 0, projHeadcount = 0, retentionSpend = 0;
+
+    workforceTwin.forEach(t => {
+      // A blanket hike lifts salary + statutory, but lowers flight risk.
+      const salaryPart = t.roi.cost.baseSalary * hikeFactor;
+      const newCost = salaryPart * (1 + STATUTORY_LOAD) + t.roi.cost.overhead;
+      retentionSpend += newCost - t.roi.cost.total;
+
+      // Each 5% of hike is modelled as ~9 points of risk relief.
+      const riskRelief = (scenario.blanketHikePct / 5) * 9;
+      let projRisk = Math.max(3, t.risk.score - riskRelief + scenario.attritionShockPct);
+      if (scenario.retainCriticalOnly && t.isManager) projRisk = Math.max(3, projRisk - 8);
+      projRisk = Math.min(99, projRisk);
+
+      projCost += newCost;
+      projValue += t.roi.annualValue;
+      projExpectedLoss += (t.loss.total * projRisk) / 100;
+      projHeadcount += 1;
+    });
+
+    // A hiring freeze leaves every vacant seat unfilled — output never arrives.
+    let frozenOutputLoss = 0;
+    if (scenario.hiringFreeze) {
+      budgetModel.forEach(b => {
+        if (b.vacant > 0) {
+          // Value a vacant seat at the department's average annual value per head.
+          const perHead = b.headcount > 0 ? b.annualValue / b.headcount : 1200000;
+          frozenOutputLoss += perHead * b.vacant;
+        }
+      });
+    }
+
+    const projNetPL = projValue - projCost - projExpectedLoss - frozenOutputLoss;
+    const baseNetPL = base.value - base.cost - base.expectedLoss;
+
+    return {
+      base: { ...base, netPLWithRisk: baseNetPL },
+      projected: {
+        headcount: projHeadcount,
+        cost: Math.round(projCost),
+        value: Math.round(projValue),
+        expectedLoss: Math.round(projExpectedLoss),
+        retentionSpend: Math.round(retentionSpend),
+        frozenOutputLoss: Math.round(frozenOutputLoss),
+        netPL: Math.round(projNetPL),
+      },
+      delta: Math.round(projNetPL - baseNetPL),
+      riskAverted: Math.round(base.expectedLoss - projExpectedLoss),
+    };
+  }, [workforceTwin, workforceKPIs, budgetModel, scenario]);
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     FINANCE CONTROL TOWER — ACTIONS
+     ═══════════════════════════════════════════════════════════════════════════ */
+
+  /** Builds a ledger row. Every rupee that moves gets one of these. */
+  function ledgerRow({ dept, category, subCategory, emp, amount, note }) {
+    return {
+      id: nextId("FIN"),
+      date: getLocalDateStr(),
+      dept, category, subCategory,
+      emp: emp || "—",
+      amount: Math.round(amount),
+      note: note || "",
+      approvedBy: "Accountant / Finance Control",
+    };
+  }
+
+  /** Charges a one-time amount against a department's annual envelope. */
+  function chargeBudget(dept, amount) {
+    const row = (db.budget || []).find(b => b.dept === dept);
+    if (!row) return null;
+    const oneTimeSpent = (Number(row.oneTimeSpent) || 0) + Math.round(amount);
+    return { id: row.id, oneTimeSpent };
+  }
+
+  /**
+   * The budget gate HR must clear before a hire is allowed. Checks both the
+   * sanctioned-headcount ceiling and the money envelope, and reports whether
+   * the hire pays for itself.
+   */
+  function evaluateHire(dept, designation) {
+    const b = budgetByDept[dept];
+    const onboarding = onboardingCostModel(designation);
+    const probe = { designation, dailyRate: DESIGNATION_RATES[designation] || 1000, joined: todayStr };
+    const roi = employeeROIModel(probe, todayStr);
+
+    if (!b) {
+      return { allowed: true, onboarding, roi, reasons: [], budget: null, firstYearDraw: onboarding.total + roi.cost.total };
+    }
+
+    const firstYearDraw = onboarding.total + roi.cost.total;
+    const reasons = [];
+    let allowed = true;
+
+    // An open vacancy means the seat was already budgeted for — a backfill does
+    // not breach the ceiling even though headcount is momentarily short.
+    if (b.headcount >= b.sanctioned) {
+      allowed = false;
+      reasons.push(`Headcount ceiling reached — ${b.dept} is sanctioned for ${b.sanctioned} and already carries ${b.headcount}. Finance must revise the sanctioned strength before this hire.`);
+    }
+    if (firstYearDraw > b.available) {
+      allowed = false;
+      reasons.push(`Insufficient budget — ${b.dept} has ${fmtINR(b.available)} uncommitted but this ${designation} draws ${fmtINR(firstYearDraw)} in year one (${fmtINR(onboarding.total)} one-time + ${fmtINR(roi.cost.total)} run-rate).`);
+    }
+
+    const warnings = [];
+    if (allowed && roi.steadyMargin <= 0) {
+      warnings.push(`This grade is loss-making at plan: annual cost ${fmtINR(roi.cost.total)} exceeds modelled output ${fmtINR(roi.annualValue)}.`);
+    }
+    if (allowed && firstYearDraw > b.available * 0.6) {
+      warnings.push(`This single hire consumes ${Math.round((firstYearDraw / b.available) * 100)}% of the department's remaining budget.`);
+    }
+
+    return { allowed, reasons, warnings, onboarding, roi, budget: b, firstYearDraw };
+  }
+
+  /** Opens the retention decision desk for one at-risk employee. */
+  function actionRetention(empId) {
+    const t = twinByEmpId[empId] || riskRegister[0];
+    if (!t) { pushLog("WARN", "attrition", "No active employees available for a retention review."); return; }
+    const offers = RETENTION_LEVERS.map(l => retentionOfferModel(t.emp, l, t.risk.score, t.loss.total, t.rating));
+    const best = offers.filter(o => o.netBenefit > 0 && !o.ineligible).sort((a, b) => b.netBenefit - a.netBenefit)[0];
+    setModal({
+      type: "retention",
+      empId: t.emp.id,
+      leverKey: best ? best.lever.key : "retention_hike",
+    });
+  }
+
+  /** Commits a retention package: raises pay/grade, books the cost, logs the call. */
+  async function confirmRetention() {
+    const t = twinByEmpId[modal.empId];
+    if (!t) { setModal(null); return; }
+    const lever = RETENTION_LEVERS.find(l => l.key === modal.leverKey) || RETENTION_LEVERS[1];
+    const offer = retentionOfferModel(t.emp, lever, t.risk.score, t.loss.total, t.rating);
+    const b = budgetByDept[t.dept];
+
+    // Finance gate: a retention package is still a budget draw.
+    if (b && offer.yearOneCost > b.available) {
+      pushLog("WARN", "budget", `Retention package for ${t.emp.name} rejected — ${fmtINR(offer.yearOneCost)} required but ${t.dept} has only ${fmtINR(b.available)} uncommitted. Escalate for a budget revision or proceed to backfill.`);
+      setModal(null);
+      return;
+    }
+    if (lever.requiresAppraisal && !t.rating) {
+      pushLog("WARN", "performance", `Promotion-based retention blocked for ${t.emp.name} — no appraisal on file. Log an appraisal cycle first, or use a retention hike instead.`);
+      setModal(null);
+      return;
+    }
+
+    setModal(null);
+
+    const empUpdate = {
+      id: t.emp.id,
+      dailyRate: offer.newRate,
+      designation: offer.newDesignation,
+      lastGradeChange: todayStr,
+      retentionApplied: lever.label,
+    };
+
+    const attritionRow = {
+      id: nextId("RET"),
+      type: "Retention",
+      emp: t.emp.name,
+      dept: t.dept,
+      grade: offer.newDesignation,
+      date: todayStr,
+      lever: lever.label,
+      riskBefore: t.risk.score,
+      riskAfter: offer.residualRisk,
+      cost: offer.yearOneCost,
+      lossAverted: offer.expectedSaving,
+      netBenefit: offer.netBenefit,
+      status: "Package Accepted",
+      topDriver: t.risk.drivers[0]?.label || "—",
+    };
+
+    const fin = ledgerRow({
+      dept: t.dept, category: "Retention", subCategory: lever.label, emp: t.emp.name,
+      amount: offer.yearOneCost,
+      note: `Flight risk ${t.risk.score}→${offer.residualRisk}. Modelled exit loss ${fmtINR(t.loss.total)}; expected saving ${fmtINR(offer.expectedSaving)}; net benefit ${fmtINR(offer.netBenefit)}.`,
+    });
+
+    const budgetUpdate = chargeBudget(t.dept, offer.yearOneCost);
+
+    const steps = [
+      {
+        node: "attrition", op: "SELECT", edge: ["attrition", "emp_docs"],
+        text: `🔍 Retention review — ${t.emp.name} (${t.desig}, ${t.dept}) flagged at ${t.risk.score}/100 flight risk. Primary driver: ${t.risk.drivers[0]?.label || "n/a"}. Modelled cost of losing them: ${fmtINR(t.loss.total)}.`
+      },
+      {
+        node: "attrition", op: "INSERT", edge: ["attrition", "finance_ledger"],
+        text: `🤝 Retention package approved — ${lever.label} (${lever.detail}) for ${t.emp.name}. Risk ${t.risk.score} → ${offer.residualRisk}.`, row: attritionRow, alert: true
+      },
+      {
+        node: "emp_docs", op: "UPDATE", edge: ["emp_docs", "payroll"],
+        text: `💰 ${t.emp.name} revised: ${t.desig} Rs.${Number(t.emp.dailyRate || 0).toLocaleString("en-IN")}/d → ${offer.newDesignation} ${fmtINR(offer.newRate)}/d. Payroll run-rate updated from next cycle.`, row: empUpdate
+      },
+      {
+        node: "finance_ledger", op: "INSERT", edge: ["finance_ledger", "budget"],
+        text: `📒 Ledger: ${fmtINR(offer.yearOneCost)} booked to ${t.dept} under Retention. Avoids a modelled ${fmtINR(offer.expectedSaving)} probability-weighted attrition loss — net ${offer.netBenefit >= 0 ? "gain" : "cost"} ${fmtINR(Math.abs(offer.netBenefit))}.`, row: fin
+      },
+    ];
+    if (budgetUpdate) {
+      steps.push({
+        node: "budget", op: "UPDATE",
+        text: `🏦 ${t.dept} budget envelope drawn down by ${fmtINR(offer.yearOneCost)}. Remaining uncommitted: ${fmtINR((b?.available || 0) - offer.yearOneCost)}.`, row: budgetUpdate
+      });
+    }
+    await execute(steps);
+  }
+
+  /** Opens the vacancy fill desk — internal succession vs external hire. */
+  function actionFillVacancy(vacancyId) {
+    const v = openVacancies.find(x => x.id === vacancyId) || openVacancies[0];
+    if (!v) { pushLog("WARN", "attrition", "No open vacancies to fill."); return; }
+    const active = (db.emp_docs || []).filter(e => !e.status?.includes("Inactive"));
+    const probe = { id: "__vacancy__", designation: v.grade, department: v.dept, dept: v.dept };
+    const candidates = findReplacementCandidates(probe, active, ratingOf);
+    setModal({
+      type: "fill_vacancy",
+      vacancyId: v.id,
+      fillMode: candidates.length ? "internal" : "external",
+      candidateId: candidates[0]?.emp.id || "",
+    });
+  }
+
+  /** Commits a vacancy fill. Internal moves cascade a new, lower-grade vacancy. */
+  async function confirmFillVacancy() {
+    const v = openVacancies.find(x => x.id === modal.vacancyId);
+    if (!v) { setModal(null); return; }
+    const mode = modal.fillMode;
+    setModal(null);
+
+    if (mode === "internal") {
+      const cand = (db.emp_docs || []).find(e => e.id === modal.candidateId);
+      if (!cand) { pushLog("WARN", "attrition", "Selected internal candidate is no longer available."); return; }
+      const candDesig = cand.designation || cand.desig;
+      const candDept = cand.department || cand.dept;
+      const isPromotion = gradeRank(v.grade) > gradeRank(candDesig);
+      const newRate = DESIGNATION_RATES[v.grade] || cand.dailyRate;
+      const deltaCost = Math.round(((newRate - (Number(cand.dailyRate) || 0)) * 30 * 12) * (1 + STATUTORY_LOAD));
+
+      const empUpdate = {
+        id: cand.id,
+        designation: v.grade,
+        department: v.dept,
+        dept: v.dept,
+        dailyRate: newRate,
+        lastGradeChange: todayStr,
+      };
+
+      const fin = ledgerRow({
+        dept: v.dept, category: "Succession", subCategory: isPromotion ? "Internal Promotion" : "Lateral Cover",
+        emp: cand.name, amount: Math.max(0, deltaCost),
+        note: `Filled ${v.grade} vacancy internally. Avoided ${fmtINR(onboardingCostModel(v.grade).total)} of external onboarding cost and ${v.daysOpen > 0 ? v.daysOpen : 0} further days of vacancy loss.`,
+      });
+
+      const vacancyClose = {
+        id: v.id, status: "Filled (Internal)", filledOn: todayStr, filledBy: cand.name,
+        fillMode: isPromotion ? "Internal Promotion" : "Lateral Cover",
+        realisedLoss: v.cumulativeLoss,
+      };
+
+      const steps = [
+        {
+          node: "attrition", op: "SELECT", edge: ["attrition", "emp_docs"],
+          text: `🔎 Succession search for the ${v.grade} vacancy in ${v.dept} — ${cand.name} (${candDesig}, ${candDept}) identified as the closest-grade internal match.`
+        },
+        {
+          node: "emp_docs", op: "UPDATE", edge: ["emp_docs", "payroll"],
+          text: `⬆️ ${cand.name} ${isPromotion ? `promoted ${candDesig} → ${v.grade}` : `moved into the ${v.grade} seat`} in ${v.dept}. Run-rate impact ${fmtINR(deltaCost)}/yr versus ${fmtINR(onboardingCostModel(v.grade).total)} to hire externally.`, row: empUpdate, alert: true
+        },
+        {
+          node: "attrition", op: "UPDATE", edge: ["attrition", "finance_ledger"],
+          text: `✅ Vacancy ${v.id} closed internally after ${v.daysOpen} day(s). Realised output loss during the gap: ${fmtINR(v.cumulativeLoss)}.`, row: vacancyClose
+        },
+        {
+          node: "finance_ledger", op: "INSERT", edge: ["finance_ledger", "budget"],
+          text: `📒 Ledger: ${fmtINR(Math.max(0, deltaCost))} booked to ${v.dept} under Succession.`, row: fin
+        },
+      ];
+
+      // A promotion empties the seat the successor just left — the cascade.
+      if (isPromotion) {
+        const g = gradeEcon(candDesig);
+        const cascade = {
+          id: nextId("VAC"),
+          type: "Vacancy",
+          dept: candDept,
+          grade: candDesig,
+          openedOn: todayStr,
+          reason: "Backfill — internal promotion cascade",
+          causedBy: `${cand.name} promoted into ${v.grade}`,
+          status: "Open",
+          dailyLoss: Math.round(g.annualValue / 365),
+          expectedDaysToFill: g.daysToFill,
+        };
+        steps.push({
+          node: "attrition", op: "INSERT", edge: ["attrition", "budget"],
+          text: `🔁 Cascade: promoting ${cand.name} opens a new ${candDesig} vacancy in ${candDept}. Carrying cost ${fmtINR(cascade.dailyLoss)}/day until filled.`, row: cascade, alert: true
+        });
+      }
+
+      const budgetUpdate = chargeBudget(v.dept, Math.max(0, deltaCost));
+      if (budgetUpdate) {
+        steps.push({
+          node: "budget", op: "UPDATE",
+          text: `🏦 ${v.dept} envelope adjusted for the internal move.`, row: budgetUpdate
+        });
+      }
+      await execute(steps);
+      return;
+    }
+
+    // External hire route — hand off to the budget-gated onboarding form.
+    setEmpFormName("");
+    setEmpFormDept(v.dept);
+    setEmpFormDesig(v.grade);
+    setShowEmpForm(true);
+    pushLog("SELECT", "attrition", `🧾 External backfill selected for vacancy ${v.id} (${v.grade} · ${v.dept}). Onboarding cost ${fmtINR(onboardingCostModel(v.grade).total)} will be budget-checked before the hire is allowed.`);
+  }
+
+  /** Opens the accountant's budget revision desk for one department. */
+  function actionReviseBudget(deptName) {
+    const b = budgetByDept[deptName] || budgetModel[0];
+    if (!b) { pushLog("WARN", "budget", "No budget control rows available."); return; }
+    setModal({
+      type: "revise_budget",
+      dept: b.dept,
+      sanctioned: b.sanctioned,
+      annualBudget: b.annualBudget,
+    });
+  }
+
+  /** Commits a revised sanctioned strength / annual envelope. */
+  async function confirmReviseBudget() {
+    const b = budgetByDept[modal.dept];
+    if (!b) { setModal(null); return; }
+    const newSanctioned = Math.max(0, parseInt(modal.sanctioned, 10) || 0);
+    const newBudget = Math.max(0, Math.round(Number(modal.annualBudget) || 0));
+    setModal(null);
+
+    if (newBudget < b.totalCommitted) {
+      pushLog("WARN", "budget", `Budget revision rejected — ${b.dept} already has ${fmtINR(b.totalCommitted)} committed against live headcount and booked costs. The envelope cannot be cut below what is already spent.`);
+      return;
+    }
+    if (newSanctioned < b.headcount) {
+      pushLog("WARN", "budget", `Sanctioned strength cannot drop to ${newSanctioned} — ${b.dept} currently carries ${b.headcount} active employees. Offboard or redeploy first, then reduce the ceiling.`);
+      return;
+    }
+
+    const existingBudgetRow = (db.budget || []).find(r => r.id === b.id) || b;
+    const row = { ...existingBudgetRow, sanctioned: newSanctioned, annualBudget: newBudget };
+    const fin = ledgerRow({
+      dept: b.dept, category: "Budget Revision", subCategory: "Plan Amendment", emp: "—",
+      amount: newBudget - b.annualBudget,
+      note: `Sanctioned strength ${b.sanctioned} → ${newSanctioned}; envelope ${fmtINR(b.annualBudget)} → ${fmtINR(newBudget)}.`,
+    });
+
+    await execute([
+      {
+        node: "budget", op: "UPDATE", alert: true,
+        text: `🏦 Budget revised for ${b.dept}: headcount ceiling ${b.sanctioned} → ${newSanctioned}, annual envelope ${fmtINR(b.annualBudget)} → ${fmtINR(newBudget)}. Uncommitted funds now ${fmtINR(newBudget - b.totalCommitted)}.`, row
+      },
+      {
+        node: "finance_ledger", op: "INSERT", edge: ["finance_ledger", "budget"],
+        text: `📒 Plan amendment recorded against ${b.dept}.`, row: fin
+      },
+    ]);
+  }
+
   const ACTIONS = [
     { key: "add_emp", label: "Add Employee", run: actionAddEmployee, modId: "emp_docs", role: "HR" },
     { key: "mobility", label: "Internal Mobility", run: () => actionMobility("promote"), modId: "emp_docs", role: "HR" },
@@ -2422,10 +4090,11 @@ export default function ModuleSimulation() {
     { key: "log_perf", label: "Log Appraisal", run: actionLogAppraisal, modId: "performance", role: "HR" },
     { key: "manage_ast", label: "Manage Assets", run: () => actionManageAssets("allocate"), modId: "assets", role: "HR" },
     { key: "loan_req", label: "Apply for Loan", run: actionApplyLoan, modId: "loans", role: "EMP" },
-    { key: "nominate", label: "Nominate Award", run: actionNominateAward, modId: "awards", role: "HR" },
+    { key: "comp_inc", label: "Comp & Incentives", run: () => actionCompIncentives(), modId: "comp_incentives", role: "HR" },
     { key: "payroll", label: "Run Payroll", run: actionRunPayroll, modId: "payroll", role: "HR" },
-    { key: "allowance", label: "Add Allowance", run: actionAddAllowance, modId: "special_allowances", role: "HR" },
     { key: "ess", label: "ESS Request", run: actionESS, modId: "ess", role: "EMP" },
+    { key: "retention", label: "Retention Desk", run: () => actionRetention(riskRegister[0]?.emp.id), modId: "attrition", role: "FIN" },
+    { key: "budget_rev", label: "Revise Budget", run: actionReviseBudget, modId: "budget", role: "FIN" },
   ];
 
   function toggleDep(id) {
@@ -2547,7 +4216,14 @@ export default function ModuleSimulation() {
         return { ...m, active: false };
       })
     );
-    setLog([{ id: 0, time: new Date().toTimeString().slice(0, 8), op: "SYSTEM", table: "—", text: "Simulation reset. Custom modules deactivated (data preserved)." }]);
+    // Restore the accountant's opening budget plan so the finance twin has a
+    // clean envelope to model against after a reset.
+    setDb(prev => ({ ...prev, budget: seedBudgetRows() }));
+    setFinTab("overview");
+    setExpandedRisk(null);
+    setScenario({ hiringFreeze: false, blanketHikePct: 0, attritionShockPct: 0, retainCriticalOnly: true });
+
+    setLog([{ id: 0, time: new Date().toTimeString().slice(0, 8), op: "SYSTEM", table: "—", text: "Simulation reset. Custom modules deactivated (data preserved). Department budgets restored to the sanctioned opening plan." }]);
     setHlNodes(new Set()); setHlEdges(new Set()); setFlash(new Set());
   }
 
@@ -2611,13 +4287,26 @@ export default function ModuleSimulation() {
           <div style={{ fontSize: 22, fontWeight: 700, color: "#F4F7FB" }}>Module Dependency &amp; Database Simulator</div>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          <button className="btn" onClick={() => {
-            setHrViewEnabled(prev => !prev);
-            setInspectRecord(null);
-          }}
-            style={{ display: "flex", alignItems: "center", gap: 6, borderColor: hrViewEnabled ? "rgba(125,211,252,0.4)" : "rgba(242,184,75,0.4)", color: hrViewEnabled ? "#7DD3FC" : "#F2B84B" }}>
-            <Users size={14} /> ROLE: {hrViewEnabled ? "HR ADMIN" : "EMPLOYEE"}
-          </button>
+          <select
+            value={simRole}
+            onChange={(e) => {
+              setSimRole(e.target.value);
+              setInspectRecord(null);
+            }}
+            className="btn"
+            style={{
+              display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", outline: "none",
+              borderColor: simRole === "SUPERADMIN" ? "rgba(239,68,68,0.5)" : simRole === "HR" ? "rgba(125,211,252,0.4)" : simRole === "FIN" ? "rgba(245,165,36,0.5)" : "rgba(242,184,75,0.4)",
+              color: simRole === "SUPERADMIN" ? "#EF4444" : simRole === "HR" ? "#7DD3FC" : simRole === "FIN" ? "#F5A524" : "#F2B84B",
+              background: "#101828",
+              cursor: "pointer"
+            }}
+          >
+            <option value="EMP">ROLE: EMPLOYEE</option>
+            <option value="HR">ROLE: HR ADMIN</option>
+            <option value="FIN">ROLE: ACCOUNTANT</option>
+            <option value="SUPERADMIN">ROLE: SUPERADMIN</option>
+          </select>
           {hrViewEnabled && (
             <button className="btn" onClick={() => setShowNotifications(true)}
               style={{
@@ -2647,6 +4336,7 @@ export default function ModuleSimulation() {
             style={{ display: "flex", alignItems: "center", gap: 6, borderColor: biometricEnabled ? "rgba(140,233,154,0.4)" : "rgba(242,107,107,0.4)", color: biometricEnabled ? "#8CE99A" : "#F26B6B" }}>
             <Fingerprint size={14} /> BIOMETRIC: {biometricEnabled ? "ON" : "OFF"}
           </button>
+
           <button className="btn" onClick={openAddModule} disabled={running}
             style={{ display: "flex", alignItems: "center", gap: 6, borderColor: "rgba(242,184,75,0.4)", color: "#F2D9A6" }}>
             <Plus size={14} /> ADD MODULE
@@ -2658,13 +4348,28 @@ export default function ModuleSimulation() {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.55fr 1fr", gap: 16, padding: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16, padding: 16 }}>
         {/* Left */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {/* Graph */}
           <div className="grid-bg" style={{ position: "relative", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 4, background: "#0D1420", overflow: "hidden" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", position: "absolute", top: 10, left: 12, right: 12, zIndex: 10 }}>
-              <div className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.1em" }}>DEPENDENCY GRAPH</div>
+              <div style={{ display: "flex", gap: 16 }}>
+                <div
+                  className="mono"
+                  onClick={() => setLeftPanelView("dependencies")}
+                  style={{ cursor: "pointer", fontSize: 10, color: leftPanelView === "dependencies" ? "#4FD1C5" : "#5C7891", letterSpacing: "0.1em", borderBottom: leftPanelView === "dependencies" ? "1px solid #4FD1C5" : "none", paddingBottom: 2, transition: "all 0.2s" }}
+                >
+                  DEPENDENCY GRAPH
+                </div>
+                <div
+                  className="mono"
+                  onClick={() => setLeftPanelView("org_chart")}
+                  style={{ cursor: "pointer", fontSize: 10, color: leftPanelView === "org_chart" ? "#4FD1C5" : "#5C7891", letterSpacing: "0.1em", borderBottom: leftPanelView === "org_chart" ? "1px solid #4FD1C5" : "none", paddingBottom: 2, transition: "all 0.2s" }}
+                >
+                  ORG CHART
+                </div>
+              </div>
               {/* DB Sync Indicator */}
               <div style={{
                 display: "flex",
@@ -2687,113 +4392,117 @@ export default function ModuleSimulation() {
                 </span>
               </div>
             </div>
-            <svg viewBox={`0 0 ${layout.width} ${layout.height}`} style={{ width: "100%", height: "auto", display: "block" }}>
-              <defs>
-                <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                  <path d="M0,0 L10,5 L0,10 z" fill="#4FD1C5" />
-                </marker>
-                <marker id="arrowActive" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-                  <path d="M0,0 L10,5 L0,10 z" fill="#F2B84B" />
-                </marker>
-                <marker id="arrowAlert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-                  <path d="M0,0 L10,5 L0,10 z" fill="#EF4444" />
-                </marker>
-              </defs>
+            {leftPanelView === "dependencies" ? (
+              <svg viewBox={`0 0 ${layout.width} ${layout.height}`} style={{ width: "100%", height: "auto", display: "block" }}>
+                <defs>
+                  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                    <path d="M0,0 L10,5 L0,10 z" fill="#4FD1C5" />
+                  </marker>
+                  <marker id="arrowActive" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                    <path d="M0,0 L10,5 L0,10 z" fill="#F2B84B" />
+                  </marker>
+                  <marker id="arrowAlert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                    <path d="M0,0 L10,5 L0,10 z" fill="#EF4444" />
+                  </marker>
+                </defs>
 
-              {edges.map((e, i) => {
-                const s = layout.pos[e.dependency], t = layout.pos[e.dependent];
-                if (!s || !t) return null;
-                if (!modMap[e.dependency]?.active || !modMap[e.dependent]?.active) return null;
-                const active = hlEdges.has(`${e.dependent}|${e.dependency}`);
+                {edges.map((e, i) => {
+                  const s = layout.pos[e.dependency], t = layout.pos[e.dependent];
+                  if (!s || !t) return null;
+                  if (!modMap[e.dependency]?.active || !modMap[e.dependent]?.active) return null;
+                  const active = hlEdges.has(`${e.dependent}|${e.dependency}`);
 
-                // Adaptive edge path routing for same-layer siblings vs cross-layer flows
-                let edgePath = "";
-                const isSameLayer = Math.abs(s.y - t.y) < 25;
-                if (isSameLayer) {
-                  if (s.x < t.x) {
-                    const startX = s.x + 72;
-                    const startY = s.y;
-                    const endX = t.x - 72;
-                    const endY = t.y;
-                    const dx = endX - startX;
-                    edgePath = `M ${startX} ${startY} C ${startX + dx * 0.35} ${startY - 25}, ${endX - dx * 0.35} ${endY - 25}, ${endX} ${endY}`;
+                  // Adaptive edge path routing for same-layer siblings vs cross-layer flows
+                  let edgePath = "";
+                  const isSameLayer = Math.abs(s.y - t.y) < 25;
+                  if (isSameLayer) {
+                    if (s.x < t.x) {
+                      const startX = s.x + 72;
+                      const startY = s.y;
+                      const endX = t.x - 72;
+                      const endY = t.y;
+                      const dx = endX - startX;
+                      edgePath = `M ${startX} ${startY} C ${startX + dx * 0.35} ${startY - 25}, ${endX - dx * 0.35} ${endY - 25}, ${endX} ${endY}`;
+                    } else {
+                      const startX = s.x - 72;
+                      const startY = s.y;
+                      const endX = t.x + 72;
+                      const endY = t.y;
+                      const dx = startX - endX;
+                      edgePath = `M ${startX} ${startY} C ${startX - dx * 0.35} ${startY - 25}, ${endX + dx * 0.35} ${endY - 25}, ${endX} ${endY}`;
+                    }
+                  } else if (s.y > t.y) {
+                    const midY = (s.y + t.y) / 2;
+                    edgePath = `M ${s.x} ${s.y - 26} C ${s.x} ${midY}, ${t.x} ${midY}, ${t.x} ${t.y + 26}`;
                   } else {
-                    const startX = s.x - 72;
-                    const startY = s.y;
-                    const endX = t.x + 72;
-                    const endY = t.y;
-                    const dx = startX - endX;
-                    edgePath = `M ${startX} ${startY} C ${startX - dx * 0.35} ${startY - 25}, ${endX + dx * 0.35} ${endY - 25}, ${endX} ${endY}`;
+                    const midY = (s.y + t.y) / 2;
+                    edgePath = `M ${s.x} ${s.y + 26} C ${s.x} ${midY}, ${t.x} ${midY}, ${t.x} ${t.y - 26}`;
                   }
-                } else if (s.y > t.y) {
-                  const midY = (s.y + t.y) / 2;
-                  edgePath = `M ${s.x} ${s.y - 26} C ${s.x} ${midY}, ${t.x} ${midY}, ${t.x} ${t.y + 26}`;
-                } else {
-                  const midY = (s.y + t.y) / 2;
-                  edgePath = `M ${s.x} ${s.y + 26} C ${s.x} ${midY}, ${t.x} ${midY}, ${t.x} ${t.y - 26}`;
-                }
 
-                return (
-                  <g key={i}>
-                    <path d={edgePath}
-                      fill="none" stroke={active ? (hlAlert ? "#EF4444" : "#F2B84B") : "rgba(79,209,197,0.32)"}
-                      strokeWidth={active ? 2.4 : 1.4}
-                      markerEnd={active ? (hlAlert ? "url(#arrowAlert)" : "url(#arrowActive)") : "url(#arrow)"}
-                    />
-                    {active && (
+                  return (
+                    <g key={i}>
                       <path d={edgePath}
-                        fill="none" stroke="#FFFFFF" strokeWidth={2.5} className="flow-line" style={{ opacity: 0.8 }}
+                        fill="none" stroke={active ? (hlAlert ? "#EF4444" : "#F2B84B") : "rgba(79,209,197,0.32)"}
+                        strokeWidth={active ? 2.4 : 1.4}
+                        markerEnd={active ? (hlAlert ? "url(#arrowAlert)" : "url(#arrowActive)") : "url(#arrow)"}
                       />
-                    )}
-                  </g>
-                );
-              })}
+                      {active && (
+                        <path d={edgePath}
+                          fill="none" stroke="#FFFFFF" strokeWidth={2.5} className="flow-line" style={{ opacity: 0.8 }}
+                        />
+                      )}
+                    </g>
+                  );
+                })}
 
-              {modules.map((m) => {
-                const p = layout.pos[m.id];
-                if (!p) return null;
-                const hl = hlNodes.has(m.id);
-                const color = COLORS[m.id] || CUSTOM_PALETTE[m.name.length % CUSTOM_PALETTE.length];
-                const rows = (db[m.id] || []).length;
-                const inactive = !m.active;
-                return (
-                  <g key={m.id} transform={`translate(${p.x - 72}, ${p.y - 26})`}
-                    className={hl ? (hlAlert ? "pulse-alert" : "pulse") : ""} style={{ color: hl && hlAlert ? "#EF4444" : color, opacity: inactive ? 0.42 : 1 }}>
-                    <rect width="144" height="52" rx="4"
-                      fill={hl ? (hlAlert ? "rgba(239,68,68,0.14)" : "rgba(242,184,75,0.14)") : inactive ? "#090E1A" : "#101828"}
-                      stroke={hl ? (hlAlert ? "#EF4444" : "#F2B84B") : inactive ? "rgba(255,255,255,0.18)" : color}
-                      strokeWidth={hl ? 2.2 : 1.3} strokeDasharray={inactive ? "5,3" : "none"}
-                    />
-                    <text x="72" y={inactive ? 17 : 21} textAnchor="middle"
-                      fill={inactive ? "#5A7080" : "#F4F7FB"} fontSize="12" fontWeight="600"
-                      fontFamily="'IBM Plex Sans', sans-serif">{m.name}</text>
-                    {inactive ? (
-                      <>
-                        <text x="72" y="31" textAnchor="middle" fill="#3D5464" fontSize="8.5"
-                          fontFamily="'IBM Plex Mono', monospace" letterSpacing="0.06em">DEACTIVATED</text>
-                        <g style={{ cursor: "pointer" }} onClick={() => toggleModuleActive(m.id)}>
-                          <rect x="30" y="36" width="84" height="13" rx="2"
-                            fill="rgba(79,209,197,0.07)" stroke="rgba(79,209,197,0.25)" strokeWidth="0.8" />
-                          <text x="72" y="46" textAnchor="middle" fill="#3A8A80" fontSize="8.5"
-                            fontFamily="'IBM Plex Mono', monospace">ACTIVATE</text>
-                        </g>
-                      </>
-                    ) : (
-                      <>
-                        <text x="72" y="31" textAnchor="middle" fill="#7C93AA" fontSize="9.5"
-                          fontFamily="'IBM Plex Mono', monospace">{m.table} · {rows} rows</text>
-                        <g style={{ cursor: "pointer" }} onClick={() => toggleModuleActive(m.id)}>
-                          <rect x="30" y="36" width="84" height="13" rx="2"
-                            fill="rgba(242,107,107,0.07)" stroke="rgba(242,107,107,0.25)" strokeWidth="0.8" />
-                          <text x="72" y="46" textAnchor="middle" fill="#F26B6B" fontSize="8.5"
-                            fontFamily="'IBM Plex Mono', monospace">DEACTIVATE</text>
-                        </g>
-                      </>
-                    )}
-                  </g>
-                );
-              })}
-            </svg>
+                {modules.map((m) => {
+                  const p = layout.pos[m.id];
+                  if (!p) return null;
+                  const hl = hlNodes.has(m.id);
+                  const color = COLORS[m.id] || CUSTOM_PALETTE[m.name.length % CUSTOM_PALETTE.length];
+                  const rows = (db[m.id] || []).length;
+                  const inactive = !m.active;
+                  return (
+                    <g key={m.id} transform={`translate(${p.x - 72}, ${p.y - 26})`}
+                      className={hl ? (hlAlert ? "pulse-alert" : "pulse") : ""} style={{ color: hl && hlAlert ? "#EF4444" : color, opacity: inactive ? 0.42 : 1 }}>
+                      <rect width="144" height="52" rx="4"
+                        fill={hl ? (hlAlert ? "rgba(239,68,68,0.14)" : "rgba(242,184,75,0.14)") : inactive ? "#090E1A" : "#101828"}
+                        stroke={hl ? (hlAlert ? "#EF4444" : "#F2B84B") : inactive ? "rgba(255,255,255,0.18)" : color}
+                        strokeWidth={hl ? 2.2 : 1.3} strokeDasharray={inactive ? "5,3" : "none"}
+                      />
+                      <text x="72" y={inactive ? 17 : 21} textAnchor="middle"
+                        fill={inactive ? "#5A7080" : "#F4F7FB"} fontSize="12" fontWeight="600"
+                        fontFamily="'IBM Plex Sans', sans-serif">{m.name}</text>
+                      {inactive ? (
+                        <>
+                          <text x="72" y="31" textAnchor="middle" fill="#3D5464" fontSize="8.5"
+                            fontFamily="'IBM Plex Mono', monospace" letterSpacing="0.06em">DEACTIVATED</text>
+                          <g style={{ cursor: "pointer" }} onClick={() => toggleModuleActive(m.id)}>
+                            <rect x="30" y="36" width="84" height="13" rx="2"
+                              fill="rgba(79,209,197,0.07)" stroke="rgba(79,209,197,0.25)" strokeWidth="0.8" />
+                            <text x="72" y="46" textAnchor="middle" fill="#3A8A80" fontSize="8.5"
+                              fontFamily="'IBM Plex Mono', monospace">ACTIVATE</text>
+                          </g>
+                        </>
+                      ) : (
+                        <>
+                          <text x="72" y="31" textAnchor="middle" fill="#7C93AA" fontSize="9.5"
+                            fontFamily="'IBM Plex Mono', monospace">{m.table} · {rows} rows</text>
+                          <g style={{ cursor: "pointer" }} onClick={() => toggleModuleActive(m.id)}>
+                            <rect x="30" y="36" width="84" height="13" rx="2"
+                              fill="rgba(242,107,107,0.07)" stroke="rgba(242,107,107,0.25)" strokeWidth="0.8" />
+                            <text x="72" y="46" textAnchor="middle" fill="#F26B6B" fontSize="8.5"
+                              fontFamily="'IBM Plex Mono', monospace">DEACTIVATE</text>
+                          </g>
+                        </>
+                      )}
+                    </g>
+                  );
+                })}
+              </svg>
+            ) : (
+              <OrgChart db={db} gradeRank={gradeRank} />
+            )}
           </div>
 
           {/* Log */}
@@ -2820,7 +4529,7 @@ export default function ModuleSimulation() {
           {/* Actions */}
           <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 4, background: "#0D1420", padding: 12 }}>
             <div className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.1em", marginBottom: 10 }}>MODULE ACTIONS</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 7 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 7 }}>
               {ACTIONS.map((a) => {
                 const mod = a.modId ? modMap[a.modId] : null;
                 const isDeactivated = mod && !mod.active;
@@ -2836,6 +4545,13 @@ export default function ModuleSimulation() {
                         setTimeout(() => { setHlAlert(false); setHlNodes(new Set()); }, 1500);
                         return;
                       }
+                      if (a.role === "FIN" && !financeView) {
+                        pushLog("WARN", "system", `🔒 SECURITY ALERT: Access Denied. '${a.label}' is restricted to the Accountant / Finance Controller role.`);
+                        setHlAlert(true);
+                        setHlNodes(new Set([a.modId]));
+                        setTimeout(() => { setHlAlert(false); setHlNodes(new Set()); }, 1500);
+                        return;
+                      }
                       a.run();
                     }}
                     style={{
@@ -2845,7 +4561,12 @@ export default function ModuleSimulation() {
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
-                      ...(isDeactivated ? { opacity: 0.4, cursor: "not-allowed" } : (a.role === "HR" && !hrViewEnabled ? { opacity: 0.5, borderStyle: "dashed" } : {}))
+                      ...(isDeactivated
+                        ? { opacity: 0.4, cursor: "not-allowed" }
+                        : ((a.role === "HR" && !hrViewEnabled) || (a.role === "FIN" && !financeView)
+                          ? { opacity: 0.5, borderStyle: "dashed" }
+                          : {})),
+                      ...(a.role === "FIN" && financeView ? { borderColor: "rgba(245,165,36,0.5)", color: "#F5A524" } : {})
                     }}>
                     {a.label}
                   </button>
@@ -2907,7 +4628,7 @@ export default function ModuleSimulation() {
             </div>
 
             <div className="mono" style={{ fontSize: 10, color: "#7C93AA", marginBottom: 12, lineHeight: 1.4 }}>
-              All 9 modules and ESS self-service transactions commit live to PostgreSQL. Full audit trail, issue details, and approval stages are consolidated in the Master Explorer below.
+              All 11 modules and ESS self-service transactions commit live to PostgreSQL. Full audit trail, issue details, and approval stages are consolidated in the Master Explorer below.
             </div>
 
             {/* Active Table Chips with Row Counts */}
@@ -2972,6 +4693,994 @@ export default function ModuleSimulation() {
             </button>
           </div>
         </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════════════ */}
+      {/* ── DEPARTMENT & WORKFORCE HIERARCHY FLOWCHART (COMPACT ORG TREE) ──── */}
+      {/* ═══════════════════════════════════════════════════════════════════════ */}
+      <div id="department-hierarchy-flowchart" style={{
+        marginTop: 16, border: "1px solid rgba(125,211,252,0.25)", borderRadius: 8,
+        background: "#080E18", padding: "14px 18px", boxShadow: "0 10px 30px rgba(0,0,0,0.5)", position: "relative"
+      }}>
+        {/* Compact Flowchart Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{
+              width: 28, height: 28, borderRadius: 6, background: "rgba(125,211,252,0.12)",
+              display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid rgba(125,211,252,0.3)"
+            }}>
+              <Building2 size={15} color="#7DD3FC" />
+            </div>
+            <div>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: "#F4F7FB", display: "flex", alignItems: "center", gap: 8 }}>
+                Department Workforce Flowchart
+                <span className="mono" style={{ fontSize: 9.5, padding: "1px 7px", borderRadius: 10, background: "rgba(140,233,154,0.12)", color: "#8CE99A", border: "1px solid rgba(140,233,154,0.3)", fontWeight: 600 }}>
+                  ● Live Org Simulator
+                </span>
+              </div>
+              <div style={{ fontSize: 10.5, color: "#7C93AA" }}>
+                Enterprise Hierarchy: HQ ➔ Department Managers ➔ Team Staff. Live Onboarding &amp; Offboarding simulation.
+              </div>
+            </div>
+          </div>
+
+          {/* Quick Filters & Onboard Button */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 6,
+              background: "rgba(125,211,252,0.12)", borderRadius: 5, padding: "4px 10px",
+              border: "1px solid rgba(125,211,252,0.25)", color: "#7DD3FC", fontSize: 10, fontWeight: 600
+            }}>
+              <Building2 size={12} /> All Depts ({DEPT_POOL.length})
+            </div>
+
+            <button
+              onClick={actionAddEmployee}
+              className="btn"
+              style={{
+                display: "flex", alignItems: "center", gap: 5, padding: "4px 10px",
+                background: "linear-gradient(135deg, rgba(140,233,154,0.18) 0%, rgba(79,209,197,0.18) 100%)",
+                borderColor: "rgba(140,233,154,0.45)", color: "#8CE99A", fontWeight: 700, fontSize: 10.5
+              }}>
+              <Plus size={12} /> + Onboard
+            </button>
+          </div>
+        </div>
+
+        {/* Live Simulation Animation Status Banner */}
+        {chartAnim.active && (
+          <div style={{
+            marginTop: 8, padding: "6px 14px", borderRadius: 5,
+            background: chartAnim.type === "ADD" ? "rgba(140,233,154,0.12)" : "rgba(242,107,107,0.14)",
+            border: `1px solid ${chartAnim.type === "ADD" ? "rgba(140,233,154,0.5)" : "rgba(242,107,107,0.5)"}`,
+            display: "flex", justifyContent: "space-between", alignItems: "center"
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <RotateCcw size={13} color={chartAnim.type === "ADD" ? "#8CE99A" : "#F26B6B"} className="spin" />
+              <span className="mono" style={{ fontSize: 10, fontWeight: 700, color: chartAnim.type === "ADD" ? "#8CE99A" : "#F26B6B" }}>
+                {chartAnim.type === "ADD" ? "⚡ ONBOARDING SEQUENCE" : "⚠️ DEPROVISIONING SEQUENCE"}:
+              </span>
+              <span style={{ fontSize: 11, color: "#F4F7FB", fontWeight: 600 }}>
+                {chartAnim.message}
+              </span>
+            </div>
+            <span className="mono" style={{ fontSize: 9.5, color: "#9FB4C8" }}>Stage {chartAnim.stage}/3</span>
+          </div>
+        )}
+
+        {/* Compact Tree Root: Enterprise HQ Node */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginTop: 10 }}>
+          <div style={{
+            display: "inline-flex", alignItems: "center", gap: 8, padding: "4px 16px", borderRadius: 20,
+            background: chartAnim.active && chartAnim.stage === 1 ? "rgba(140,233,154,0.25)" : "#0D1420",
+            border: chartAnim.active && chartAnim.stage === 1 ? "1.5px solid #8CE99A" : "1px solid rgba(125,211,252,0.35)",
+            boxShadow: chartAnim.active && chartAnim.stage === 1 ? "0 0 16px rgba(140,233,154,0.4)" : "none",
+            transition: "all 0.3s ease"
+          }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#F4F7FB" }}>🏢 Enterprise HQ</span>
+            <span style={{ width: 4, height: 4, borderRadius: "50%", background: "#7DD3FC" }} />
+            <span className="mono" style={{ fontSize: 10, color: "#7DD3FC", fontWeight: 600 }}>
+              {activeEmpsList.length} Staff · {DEPT_POOL.length} Departments
+            </span>
+          </div>
+
+          {/* Central Stem Line */}
+          <div style={{ width: 2, height: 12, background: "rgba(125,211,252,0.3)" }} />
+        </div>
+
+        {/* Compact Department Cards Grid */}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))",
+          gap: 10,
+          marginTop: 2
+        }}>
+          {displayedFlowDepts.map(deptName => {
+            const deptEmployees = (db.emp_docs || []).filter(e => (e.department === deptName || e.dept === deptName));
+            const activeDeptEmps = deptEmployees.filter(e => !e.status?.includes("Inactive"));
+
+            // True Manager / Lead qualification: must have Manager, Lead, Director in designation
+            const candidateManagers = deptEmployees.filter(e => {
+              const d = (e.designation || e.desig || "").toLowerCase();
+              return !e.status?.includes("Inactive") && (d.includes("director") || d.includes("manager") || d.includes("lead"));
+            });
+            const deptManager = candidateManagers.sort((a, b) => {
+              return gradeRank(b.designation || b.desig) - gradeRank(a.designation || a.desig);
+            })[0] || null;
+
+            // Direct Reports / Subordinates (sorted: Directors first, then Managers/Leads, then rest by ranks)
+            const deptStaff = deptEmployees
+              .filter(e => e.id !== deptManager?.id)
+              .sort((a, b) => {
+                const rankA = gradeRank(a.designation || a.desig);
+                const rankB = gradeRank(b.designation || b.desig);
+                if (rankB !== rankA) return rankB - rankA;
+                return (a.name || "").localeCompare(b.name || "");
+              });
+
+            const isDeptActiveInAnim = chartAnim.active && chartAnim.dept === deptName;
+            const deptColors = {
+              "Engineering": "#4FD1C5",
+              "Product": "#F2B84B",
+              "Finance": "#8CE99A",
+              "Sales & Marketing": "#FFD166",
+              "Human Resources": "#D8A6F2",
+              "Customer Support": "#7DD3FC",
+              "Operations": "#F2946B",
+              "Legal": "#93C4D4"
+            };
+            const accentColor = deptColors[deptName] || "#7DD3FC";
+
+            return (
+              <div key={deptName} style={{
+                background: "#0D1420",
+                border: isDeptActiveInAnim
+                  ? `1.5px solid ${chartAnim.type === "ADD" ? "#8CE99A" : "#F26B6B"}`
+                  : "1px solid rgba(255,255,255,0.07)",
+                borderRadius: 6, padding: "8px 10px",
+                boxShadow: isDeptActiveInAnim
+                  ? `0 0 16px ${chartAnim.type === "ADD" ? "rgba(140,233,154,0.35)" : "rgba(242,107,107,0.35)"}`
+                  : "none",
+                display: "flex", flexDirection: "column", gap: 6,
+                transition: "all 0.25s ease"
+              }}>
+                {/* Header row: Dept name + count badge */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ width: 7, height: 7, borderRadius: "50%", background: accentColor }} />
+                    <span style={{ fontSize: 11.5, fontWeight: 700, color: "#F4F7FB" }}>{deptName}</span>
+                  </div>
+                  <span style={{
+                    fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 8,
+                    background: `${accentColor}18`, color: accentColor, border: `1px solid ${accentColor}33`
+                  }}>
+                    {activeDeptEmps.length} Staff
+                  </span>
+                </div>
+
+                {/* Live workforce & budget vitals for this department */}
+                {(() => {
+                  const bm = budgetByDept[deptName];
+                  if (!bm) return null;
+                  const utilColor = bm.utilisation > 1 ? "#F26B6B" : bm.utilisation > 0.9 ? "#F2B84B" : "#8CE99A";
+                  return (
+                    <div style={{ background: "rgba(0,0,0,0.25)", borderRadius: 4, padding: "5px 7px" }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                        {[
+                          { l: "Working", v: bm.headcount - bm.onLeave, c: "#8CE99A" },
+                          { l: "On Leave", v: bm.onLeave, c: "#7DD3FC" },
+                          { l: "Vacant", v: bm.vacant, c: bm.vacant > 0 ? "#F2B84B" : "#5C7891" },
+                          { l: "Notice", v: bm.onNotice, c: bm.onNotice > 0 ? "#F2946B" : "#5C7891" },
+                          { l: "At Risk", v: bm.atRisk, c: bm.atRisk > 0 ? "#FC8181" : "#5C7891" },
+                        ].map(x => (
+                          <span key={x.l} className="mono" style={{ fontSize: 8.5, color: "#5C7891" }}>
+                            <span style={{ color: x.c, fontWeight: 700 }}>{x.v}</span> {x.l}
+                          </span>
+                        ))}
+                      </div>
+                      <div style={{ height: 3, background: "rgba(255,255,255,0.08)", borderRadius: 2, overflow: "hidden", marginTop: 4 }}>
+                        <div style={{ width: `${Math.min(100, bm.utilisation * 100)}%`, height: "100%", background: utilColor }} />
+                      </div>
+                      <div className="mono" style={{ fontSize: 8, color: "#5C7891", marginTop: 2, display: "flex", justifyContent: "space-between" }}>
+                        <span>{Math.round(bm.utilisation * 100)}% of {fmtMoneyShort(bm.annualBudget)}</span>
+                        <span style={{ color: bm.netPL >= 0 ? "#8CE99A" : "#F26B6B" }}>P&amp;L {fmtMoneyShort(bm.netPL)}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Manager / Department Lead row */}
+                {deptManager ? (
+                  <div style={{
+                    padding: "5px 7px", borderRadius: 4,
+                    background: (isDeptActiveInAnim && chartAnim.stage === 2)
+                      ? "rgba(140,233,154,0.18)"
+                      : "rgba(255,255,255,0.03)",
+                    border: (isDeptActiveInAnim && chartAnim.stage === 2)
+                      ? "1px solid #8CE99A"
+                      : `1px solid ${accentColor}44`,
+                    display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 10
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                      <span style={{ fontSize: 11 }}>👔</span>
+                      <div>
+                        <div style={{ color: "#F4F7FB", fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>
+                          {deptManager.name}
+                          {(deptManager.designation || deptManager.desig || "").toLowerCase().includes("director") && (
+                            <span title="Executive Director" style={{ fontSize: 13, filter: "drop-shadow(0 0 4px rgba(255,215,0,0.6))" }}>👑</span>
+                          )}
+                          <span style={{
+                            fontSize: 7.5, fontWeight: 700, padding: "1px 4px", borderRadius: 2,
+                            background: `${accentColor}25`, color: accentColor, border: `1px solid ${accentColor}55`,
+                            letterSpacing: "0.05em"
+                          }}>
+                            LEAD
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 8.5, color: "#8EABC2" }}>
+                          {deptManager.designation || deptManager.desig || "Manager"}
+                        </div>
+                      </div>
+                    </div>
+
+                    {!deptManager.status?.includes("Inactive") && (
+                      <button
+                        onClick={() => {
+                          setOffboardChecklist(computeAutoOffboardChecklist(deptManager.id));
+                          setModal({
+                            type: "offboard",
+                            empId: deptManager.id,
+                            reason: "Resignation",
+                            exitDate: getLocalDateStr(),
+                            workingDays: getWorkingDaysInMonthUpToDate(getLocalDateStr()).workingDays,
+                            separationMode: "final_clearance"
+                          });
+                        }}
+                        className="mono"
+                        style={{
+                          padding: "1px 5px", fontSize: 8.5, background: "rgba(242,107,107,0.1)",
+                          border: "1px solid rgba(242,107,107,0.3)", borderRadius: 2, color: "#F26B6B", cursor: "pointer"
+                        }}
+                        title="Offboard Department Lead (Triggers Succession)">
+                        ✕ Offboard
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{
+                    fontSize: 9, color: "#F2B84B", background: "rgba(242,184,75,0.06)",
+                    border: "1px dashed rgba(242,184,75,0.3)", borderRadius: 4, padding: "4px 6px",
+                    display: "flex", justifyContent: "space-between", alignItems: "center"
+                  }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <span>⚠️</span>
+                      <span style={{ color: "#FFEAA7", fontWeight: 600 }}>Vacant · No Lead Assigned</span>
+                    </span>
+                    <span
+                      onClick={() => {
+                        setEmpFormName("");
+                        setEmpFormDept(deptName);
+                        setEmpFormDesig("Manager");
+                        setShowEmpForm(true);
+                      }}
+                      style={{ color: "#F2B84B", cursor: "pointer", textDecoration: "underline", fontSize: 8.5 }}>
+                      + Appoint Lead
+                    </span>
+                  </div>
+                )}
+
+                {/* Subordinate Staff List (only employees reporting to the manager, without duplication) */}
+                {deptStaff.length > 0 ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 2 }}>
+                    <div style={{ fontSize: 8, color: "#5C7891", textTransform: "uppercase", letterSpacing: "0.06em", padding: "0 2px" }}>
+                      Team Members ({deptStaff.filter(e => !e.status?.includes("Inactive")).length})
+                    </div>
+                    {deptStaff.map(emp => {
+                      const isInactive = emp.status?.includes("Inactive");
+                      const isThisEmpInAnim = chartAnim.active && chartAnim.empName === emp.name;
+
+                      return (
+                        <div key={emp.id} style={{
+                          padding: "4px 7px", borderRadius: 3,
+                          background: isThisEmpInAnim
+                            ? (chartAnim.type === "ADD" ? "rgba(140,233,154,0.2)" : "rgba(242,107,107,0.2)")
+                            : isInactive ? "rgba(255,255,255,0.015)" : "rgba(255,255,255,0.03)",
+                          border: isThisEmpInAnim
+                            ? `1px solid ${chartAnim.type === "ADD" ? "#8CE99A" : "#F26B6B"}`
+                            : isInactive ? "1px dashed rgba(255,255,255,0.06)" : "1px solid rgba(255,255,255,0.05)",
+                          opacity: isInactive ? 0.5 : 1,
+                          display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 10
+                        }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                            <span style={{ color: isInactive ? "#7C93AA" : "#F4F7FB", fontWeight: 500, display: "flex", alignItems: "center", gap: 4 }}>
+                              👤 {emp.name}
+                              {(emp.designation || emp.desig || "").toLowerCase().includes("director") && (
+                                <span title="Executive Director" style={{ fontSize: 11, filter: "drop-shadow(0 0 4px rgba(255,215,0,0.6))" }}>👑</span>
+                              )}
+                            </span>
+                            <span style={{
+                              fontSize: 8.5,
+                              color: (emp.designation || emp.desig || "").toLowerCase().includes("director")
+                                ? "#F2D9A6"
+                                : (emp.designation || emp.desig || "").toLowerCase().includes("manager")
+                                  ? "#8CE99A"
+                                  : (emp.designation || emp.desig || "").toLowerCase().includes("lead")
+                                    ? "#7DD3FC"
+                                    : "#6C859C",
+                              fontWeight: (emp.designation || emp.desig || "").toLowerCase().match(/director|manager|lead/) ? 600 : 400
+                            }}>
+                              ({emp.designation || emp.desig || "Staff"})
+                            </span>
+                            {isThisEmpInAnim && (
+                              <span style={{
+                                fontSize: 8, padding: "1px 4px", borderRadius: 2,
+                                background: chartAnim.type === "ADD" ? "#8CE99A" : "#F26B6B",
+                                color: "#0A0F1A", fontWeight: 700
+                              }}>
+                                {chartAnim.type === "ADD" ? "✨ ADDED" : "⚠️ OFFBOARDING"}
+                              </span>
+                            )}
+                          </div>
+
+                          {!isInactive && (
+                            <button
+                              onClick={() => {
+                                setOffboardChecklist(computeAutoOffboardChecklist(emp.id));
+                                setModal({
+                                  type: "offboard",
+                                  empId: emp.id,
+                                  reason: "Resignation",
+                                  exitDate: getLocalDateStr(),
+                                  workingDays: getWorkingDaysInMonthUpToDate(getLocalDateStr()).workingDays,
+                                  separationMode: "final_clearance"
+                                });
+                              }}
+                              className="mono"
+                              style={{
+                                padding: "1px 5px", fontSize: 8.5, background: "rgba(242,107,107,0.1)",
+                                border: "1px solid rgba(242,107,107,0.3)", borderRadius: 2, color: "#F26B6B", cursor: "pointer"
+                              }}
+                              title="Offboard this employee with clearance checklist">
+                              ✕ Offboard
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 9, color: "#5C7891", padding: "2px 4px" }}>
+                    <span>{deptManager ? "No direct reports" : "0 staff"}</span>
+                    <span
+                      onClick={() => {
+                        setEmpFormDept(deptName);
+                        setShowEmpForm(true);
+                      }}
+                      style={{ color: "#7DD3FC", cursor: "pointer", textDecoration: "underline" }}>
+                      + Add Staff
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════════════ */}
+      {/* ── FINANCE CONTROL TOWER (ACCOUNTANT) — BUDGET · ATTRITION · RETENTION  */}
+      {/* ═══════════════════════════════════════════════════════════════════════ */}
+      <div id="finance-control-tower" style={{
+        marginTop: 16, border: "1px solid rgba(245,165,36,0.28)", borderRadius: 8,
+        background: "#080E18", padding: "14px 18px", boxShadow: "0 10px 30px rgba(0,0,0,0.5)"
+      }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{
+              width: 28, height: 28, borderRadius: 6, background: "rgba(245,165,36,0.12)",
+              display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid rgba(245,165,36,0.35)"
+            }}>
+              <Wallet size={15} color="#F5A524" />
+            </div>
+            <div>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: "#F4F7FB", display: "flex", alignItems: "center", gap: 8 }}>
+                Finance Control Tower
+                <span className="mono" style={{ fontSize: 9.5, padding: "1px 7px", borderRadius: 10, background: "rgba(245,165,36,0.12)", color: "#F5A524", border: "1px solid rgba(245,165,36,0.35)", fontWeight: 600 }}>
+                  ACCOUNTANT
+                </span>
+                {!financeView && (
+                  <span className="mono" style={{ fontSize: 9, padding: "1px 7px", borderRadius: 10, background: "rgba(255,255,255,0.05)", color: "#7C93AA", border: "1px solid rgba(255,255,255,0.1)" }}>
+                    read-only — switch ROLE to ACCOUNTANT to act
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: 10.5, color: "#7C93AA" }}>
+                Department budgets, per-employee unit economics, attrition cost &amp; retention decisions — all re-derived live from the HRMS tables.
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", background: "rgba(255,255,255,0.04)", borderRadius: 5, padding: 2, border: "1px solid rgba(255,255,255,0.08)", flexWrap: "wrap" }}>
+            {[
+              { k: "overview", label: "Budgets" },
+              { k: "risk", label: `Attrition Risk (${workforceKPIs.atRisk})` },
+              { k: "vacancy", label: `Vacancies (${workforceKPIs.openVacancies})` },
+              { k: "roi", label: "Unit Economics" },
+              { k: "scenario", label: "What-If" },
+            ].map(t => (
+              <button key={t.k} onClick={() => setFinTab(t.k)}
+                style={{
+                  background: finTab === t.k ? "rgba(245,165,36,0.2)" : "transparent",
+                  color: finTab === t.k ? "#F5A524" : "#7C93AA",
+                  border: "none", borderRadius: 3, padding: "4px 10px", fontSize: 10, fontWeight: 600, cursor: "pointer"
+                }}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* ── KPI Strip: the live workforce vitals ───────────────────────────── */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))", gap: 8, marginTop: 12 }}>
+          {[
+            { label: "Headcount", value: `${workforceKPIs.headcount}/${workforceKPIs.totalSanctioned}`, sub: "active / sanctioned", color: "#4FD1C5" },
+            { label: "On Leave Today", value: workforceKPIs.onLeave, sub: "approved absence", color: "#7DD3FC" },
+            { label: "Vacant Seats", value: workforceKPIs.vacant, sub: `${workforceKPIs.openVacancies} formally open`, color: "#F2B84B" },
+            { label: "Serving Notice", value: workforceKPIs.onNotice, sub: "exiting soon", color: "#F2946B" },
+            { label: "Flight Risk", value: workforceKPIs.atRisk, sub: "high / critical", color: "#F26B6B" },
+            { label: "Budget Used", value: `${Math.round(workforceKPIs.utilisation * 100)}%`, sub: `${fmtMoneyShort(workforceKPIs.available)} free`, color: workforceKPIs.utilisation > 0.9 ? "#F26B6B" : "#8CE99A" },
+            { label: "Net Annual P&L", value: fmtMoneyShort(workforceKPIs.netPL), sub: `${workforceKPIs.profitable} profitable · ${workforceKPIs.lossMaking} loss`, color: workforceKPIs.netPL >= 0 ? "#8CE99A" : "#F26B6B" },
+            { label: "Attrition Rate", value: `${(workforceKPIs.attritionRate * 100).toFixed(1)}%`, sub: `${workforceKPIs.exitCount} exit(s) booked`, color: "#D8A6F2" },
+            { label: "Risk Provision", value: fmtMoneyShort(workforceKPIs.expectedLossProvision), sub: "prob-weighted exit cost", color: "#FC8181" },
+          ].map(k => (
+            <div key={k.label} style={{
+              background: "#0D1420", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 6, padding: "7px 9px"
+            }}>
+              <div className="mono" style={{ fontSize: 8.5, color: "#7C93AA", letterSpacing: "0.06em", textTransform: "uppercase" }}>{k.label}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: k.color, lineHeight: 1.25 }}>{k.value}</div>
+              <div style={{ fontSize: 8.5, color: "#5C7891" }}>{k.sub}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* ── TAB: Department Budgets ────────────────────────────────────────── */}
+        {finTab === "overview" && (
+          <div style={{ marginTop: 12, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                  {["Department", "Headcount", "Vacant", "Leave", "Notice", "Annual Envelope", "Committed", "Uncommitted", "Utilisation", "Net P&L / yr", "Status", ""].map(h => (
+                    <th key={h} className="mono" style={{ textAlign: h === "Department" || h === "Status" ? "left" : "right", padding: "7px 8px", color: "#7C93AA", fontSize: 9, letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {budgetModel.map(b => {
+                  const statusColor = b.status === "Over Budget" || b.status === "Headcount Breach" ? "#F26B6B"
+                    : b.status === "Near Ceiling" ? "#F2B84B" : "#8CE99A";
+                  return (
+                    <tr key={b.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                      <td style={{ padding: "7px 8px", color: "#F4F7FB", fontWeight: 600, whiteSpace: "nowrap" }}>
+                        {b.dept}
+                        <span className="mono" style={{ fontSize: 8.5, color: "#5C7891", marginLeft: 6 }}>{b.criticality}</span>
+                      </td>
+                      <td className="mono" style={{ textAlign: "right", padding: "7px 8px", color: b.headcount > b.sanctioned ? "#F26B6B" : "#DCE6F2" }}>
+                        {b.headcount}/{b.sanctioned}
+                      </td>
+                      <td className="mono" style={{ textAlign: "right", padding: "7px 8px", color: b.vacant > 0 ? "#F2B84B" : "#5C7891" }}>{b.vacant}</td>
+                      <td className="mono" style={{ textAlign: "right", padding: "7px 8px", color: b.onLeave > 0 ? "#7DD3FC" : "#5C7891" }}>{b.onLeave}</td>
+                      <td className="mono" style={{ textAlign: "right", padding: "7px 8px", color: b.onNotice > 0 ? "#F2946B" : "#5C7891" }}>{b.onNotice}</td>
+                      <td className="mono" style={{ textAlign: "right", padding: "7px 8px", color: "#DCE6F2" }}>{fmtMoneyShort(b.annualBudget)}</td>
+                      <td className="mono" style={{ textAlign: "right", padding: "7px 8px", color: "#9FB4C8" }}>{fmtMoneyShort(b.totalCommitted)}</td>
+                      <td className="mono" style={{ textAlign: "right", padding: "7px 8px", color: b.available < 0 ? "#F26B6B" : "#8CE99A" }}>{fmtMoneyShort(b.available)}</td>
+                      <td style={{ padding: "7px 8px", minWidth: 90 }}>
+                        <div style={{ height: 5, background: "rgba(255,255,255,0.08)", borderRadius: 3, overflow: "hidden" }}>
+                          <div style={{ width: `${Math.min(100, b.utilisation * 100)}%`, height: "100%", background: statusColor, transition: "width 0.3s ease" }} />
+                        </div>
+                        <div className="mono" style={{ fontSize: 8.5, color: "#7C93AA", marginTop: 2, textAlign: "right" }}>{Math.round(b.utilisation * 100)}%</div>
+                      </td>
+                      <td className="mono" style={{ textAlign: "right", padding: "7px 8px", color: b.netPL >= 0 ? "#8CE99A" : "#F26B6B", fontWeight: 600 }}>{fmtMoneyShort(b.netPL)}</td>
+                      <td style={{ padding: "7px 8px" }}>
+                        <span className="mono" style={{ fontSize: 8.5, padding: "2px 6px", borderRadius: 8, background: `${statusColor}1F`, color: statusColor, border: `1px solid ${statusColor}55`, whiteSpace: "nowrap" }}>
+                          {b.status}
+                        </span>
+                        {b.atRisk > 0 && (
+                          <span className="mono" style={{ fontSize: 8.5, padding: "2px 6px", borderRadius: 8, background: "rgba(252,129,129,0.12)", color: "#FC8181", border: "1px solid rgba(252,129,129,0.35)", marginLeft: 4, whiteSpace: "nowrap" }}>
+                            {b.atRisk} at risk
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ padding: "7px 8px", textAlign: "right" }}>
+                        <button className="btn" disabled={!financeView || running} onClick={() => actionReviseBudget(b.dept)}
+                          style={{ padding: "3px 8px", fontSize: 9.5, borderColor: "rgba(245,165,36,0.4)", color: "#F5A524" }}>
+                          Revise
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ borderTop: "1px solid rgba(255,255,255,0.14)" }}>
+                  <td className="mono" style={{ padding: "8px", color: "#F5A524", fontWeight: 700, fontSize: 10 }}>TOTAL</td>
+                  <td className="mono" style={{ textAlign: "right", padding: "8px", color: "#F4F7FB", fontWeight: 700 }}>{workforceKPIs.headcount}/{workforceKPIs.totalSanctioned}</td>
+                  <td className="mono" style={{ textAlign: "right", padding: "8px", color: "#F2B84B", fontWeight: 700 }}>{workforceKPIs.vacant}</td>
+                  <td className="mono" style={{ textAlign: "right", padding: "8px", color: "#7DD3FC", fontWeight: 700 }}>{workforceKPIs.onLeave}</td>
+                  <td className="mono" style={{ textAlign: "right", padding: "8px", color: "#F2946B", fontWeight: 700 }}>{workforceKPIs.onNotice}</td>
+                  <td className="mono" style={{ textAlign: "right", padding: "8px", color: "#F4F7FB", fontWeight: 700 }}>{fmtMoneyShort(workforceKPIs.totalBudget)}</td>
+                  <td className="mono" style={{ textAlign: "right", padding: "8px", color: "#9FB4C8", fontWeight: 700 }}>{fmtMoneyShort(workforceKPIs.totalCommitted)}</td>
+                  <td className="mono" style={{ textAlign: "right", padding: "8px", color: workforceKPIs.available < 0 ? "#F26B6B" : "#8CE99A", fontWeight: 700 }}>{fmtMoneyShort(workforceKPIs.available)}</td>
+                  <td className="mono" style={{ textAlign: "right", padding: "8px", color: "#7C93AA", fontWeight: 700 }}>{Math.round(workforceKPIs.utilisation * 100)}%</td>
+                  <td className="mono" style={{ textAlign: "right", padding: "8px", color: workforceKPIs.netPL >= 0 ? "#8CE99A" : "#F26B6B", fontWeight: 700 }}>{fmtMoneyShort(workforceKPIs.netPL)}</td>
+                  <td colSpan={2} />
+                </tr>
+              </tfoot>
+            </table>
+            <div style={{ marginTop: 8, fontSize: 9.5, color: "#5C7891", lineHeight: 1.6 }}>
+              <strong style={{ color: "#7C93AA" }}>How to read this:</strong> <em>Committed</em> = annualised salary + {Math.round(STATUTORY_LOAD * 100)}% statutory load + per-seat overhead for everyone currently on the books, plus one-time charges (onboarding, retention, attrition) already booked. <em>Net P&amp;L</em> compares that against the modelled annual output of the people in the department. HR cannot onboard past the sanctioned ceiling or the uncommitted balance — the accountant must revise the plan first.
+            </div>
+          </div>
+        )}
+
+        {/* ── TAB: Attrition Risk & Retention ────────────────────────────────── */}
+        {finTab === "risk" && (
+          <div style={{ marginTop: 12 }}>
+            {/* Simulation Stress Test Control Bar */}
+            <div style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              background: "rgba(245,165,36,0.06)", border: "1px solid rgba(245,165,36,0.22)",
+              borderRadius: 6, padding: "8px 12px", marginBottom: 12, flexWrap: "wrap", gap: 10
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Zap size={14} style={{ color: "#F5A524" }} />
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#F4F7FB" }}>
+                  Digital Twin Market Stress Test:
+                </span>
+                <span className="mono" style={{ fontSize: 10, color: scenario.attritionShockPct > 0 ? "#F26B6B" : "#8CE99A", fontWeight: 600 }}>
+                  {scenario.attritionShockPct > 0 ? `🔥 +${scenario.attritionShockPct} pts competitor poaching shock` : "🌱 Baseline Market (Normal)"}
+                </span>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span className="mono" style={{ fontSize: 9.5, color: "#9FB4C8" }}>Shock Slider:</span>
+                <input
+                  type="range" min="0" max="40" step="5"
+                  value={scenario.attritionShockPct}
+                  onChange={e => setScenario(s => ({ ...s, attritionShockPct: Number(e.target.value) }))}
+                  style={{ width: 110, accentColor: "#F26B6B", cursor: "pointer" }}
+                />
+                <div style={{ display: "flex", gap: 5 }}>
+                  <button
+                    onClick={() => setScenario(s => ({ ...s, attritionShockPct: 0 }))}
+                    className="btn mono"
+                    style={{ fontSize: 9, padding: "2px 8px", borderColor: scenario.attritionShockPct === 0 ? "#4FD1C5" : "rgba(255,255,255,0.15)", color: scenario.attritionShockPct === 0 ? "#4FD1C5" : "#7C93AA", background: scenario.attritionShockPct === 0 ? "rgba(79,209,197,0.15)" : "transparent" }}>
+                    Baseline (0)
+                  </button>
+                  <button
+                    onClick={() => setScenario(s => ({ ...s, attritionShockPct: 15 }))}
+                    className="btn mono"
+                    style={{ fontSize: 9, padding: "2px 8px", borderColor: scenario.attritionShockPct === 15 ? "#F5A524" : "rgba(255,255,255,0.15)", color: scenario.attritionShockPct === 15 ? "#F5A524" : "#7C93AA", background: scenario.attritionShockPct === 15 ? "rgba(245,165,36,0.15)" : "transparent" }}>
+                    +15 Shock
+                  </button>
+                  <button
+                    onClick={() => setScenario(s => ({ ...s, attritionShockPct: 25 }))}
+                    className="btn mono"
+                    style={{ fontSize: 9, padding: "2px 8px", borderColor: scenario.attritionShockPct === 25 ? "#F26B6B" : "rgba(255,255,255,0.15)", color: scenario.attritionShockPct === 25 ? "#F26B6B" : "#7C93AA", background: scenario.attritionShockPct === 25 ? "rgba(242,107,107,0.15)" : "transparent" }}>
+                    +25 Shock (Retain Active)
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {riskRegister.length === 0 ? (
+              <div style={{ padding: 20, textAlign: "center", color: "#5C7891", fontSize: 11 }}>
+                No active employees yet. Onboard someone to populate the attrition model.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {riskRegister.map(t => {
+                  const offers = RETENTION_LEVERS.map(l => retentionOfferModel(t.emp, l, t.risk.score, t.loss.total, t.rating));
+                  const best = offers.filter(o => o.netBenefit > 0 && !o.ineligible).sort((a, b) => b.netBenefit - a.netBenefit)[0];
+                  const isOpen = expandedRisk === t.emp.id;
+                  return (
+                    <div key={t.emp.id} style={{
+                      background: "#0D1420", border: `1px solid ${t.risk.score >= 55 ? t.risk.color + "55" : "rgba(255,255,255,0.07)"}`,
+                      borderRadius: 6, overflow: "hidden"
+                    }}>
+                      <div onClick={() => setExpandedRisk(isOpen ? null : t.emp.id)}
+                        style={{ display: "grid", gridTemplateColumns: "1.5fr 90px 1fr 1fr 1fr auto", gap: 10, alignItems: "center", padding: "8px 10px", cursor: "pointer" }}>
+                        <div>
+                          <div style={{ fontSize: 11.5, fontWeight: 600, color: "#F4F7FB", display: "flex", alignItems: "center", gap: 6 }}>
+                            {isOpen ? <ChevronDown size={12} color="#7C93AA" /> : <ChevronRight size={12} color="#7C93AA" />}
+                            {t.emp.name}
+                            {t.isManager && <span className="mono" style={{ fontSize: 8, padding: "1px 5px", borderRadius: 7, background: "rgba(245,165,36,0.14)", color: "#F5A524" }}>LEADER</span>}
+                            {t.onLeave && <span className="mono" style={{ fontSize: 8, padding: "1px 5px", borderRadius: 7, background: "rgba(125,211,252,0.14)", color: "#7DD3FC" }}>ON LEAVE</span>}
+                          </div>
+                          <div className="mono" style={{ fontSize: 9, color: "#7C93AA", marginLeft: 18 }}>
+                            {t.desig} · {t.dept} · {t.roi.tenureMonths}mo tenure · {t.rating || "no appraisal"}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div style={{ height: 5, background: "rgba(255,255,255,0.08)", borderRadius: 3, overflow: "hidden" }}>
+                            <div style={{ width: `${t.risk.score}%`, height: "100%", background: t.risk.color }} />
+                          </div>
+                          <div className="mono" style={{ fontSize: 8.5, color: t.risk.color, marginTop: 2, fontWeight: 700 }}>{t.risk.score} {t.risk.band}</div>
+                        </div>
+
+                        <div className="mono" style={{ fontSize: 9.5, color: "#9FB4C8" }}>
+                          <span style={{ color: "#5C7891" }}>top driver </span>{t.risk.drivers[0]?.label.slice(0, 40) || "—"}
+                        </div>
+
+                        <div className="mono" style={{ fontSize: 9.5 }}>
+                          <div style={{ color: "#F26B6B", fontWeight: 700 }}>{fmtMoneyShort(t.loss.total)}</div>
+                          <div style={{ color: "#5C7891", fontSize: 8.5 }}>cost if they leave</div>
+                        </div>
+
+                        <div className="mono" style={{ fontSize: 9.5 }}>
+                          {best ? (
+                            <>
+                              <div style={{ color: "#8CE99A", fontWeight: 700 }}>{best.lever.label}</div>
+                              <div style={{ color: "#5C7891", fontSize: 8.5 }}>net +{fmtMoneyShort(best.netBenefit)}</div>
+                            </>
+                          ) : (
+                            <>
+                              <div style={{ color: "#F2946B", fontWeight: 700 }}>Let go &amp; backfill</div>
+                              <div style={{ color: "#5C7891", fontSize: 8.5 }}>no lever pays back</div>
+                            </>
+                          )}
+                        </div>
+
+                        <button className="btn" disabled={!financeView || running}
+                          onClick={(e) => { e.stopPropagation(); actionRetention(t.emp.id); }}
+                          style={{ padding: "4px 10px", fontSize: 9.5, borderColor: "rgba(140,233,154,0.4)", color: "#8CE99A" }}>
+                          Retention Desk
+                        </button>
+                      </div>
+
+                      {isOpen && (
+                        <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", padding: "10px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, background: "rgba(255,255,255,0.015)" }}>
+                          {/* Why they are at risk */}
+                          <div>
+                            <div className="mono" style={{ fontSize: 9, color: "#F5A524", letterSpacing: "0.08em", marginBottom: 5 }}>WHY THIS SCORE</div>
+                            {t.risk.drivers.map((d, i) => (
+                              <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, padding: "2px 0", color: "#9FB4C8" }}>
+                                <span>{d.label}</span>
+                                <span className="mono" style={{ color: d.points > 0 ? "#F26B6B" : "#8CE99A", fontWeight: 600 }}>{d.points > 0 ? "+" : ""}{d.points}</span>
+                              </div>
+                            ))}
+                            <div className="mono" style={{ fontSize: 9, color: "#F5A524", letterSpacing: "0.08em", margin: "10px 0 5px" }}>COST OF LOSING THEM</div>
+                            {t.loss.heads.map((h, i) => (
+                              <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 10, padding: "2px 0", color: "#9FB4C8" }}>
+                                <span title={h.note}>{h.label}</span>
+                                <span className="mono" style={{ color: "#DCE6F2" }}>{fmtINR(h.amount)}</span>
+                              </div>
+                            ))}
+                            <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid rgba(255,255,255,0.08)", marginTop: 4, paddingTop: 4, fontSize: 10.5, fontWeight: 700 }}>
+                              <span style={{ color: "#F4F7FB" }}>Total exit cost</span>
+                              <span className="mono" style={{ color: "#F26B6B" }}>{fmtINR(t.loss.total)}</span>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#7C93AA", marginTop: 2 }}>
+                              <span>Probability-weighted ({t.risk.score}%)</span>
+                              <span className="mono">{fmtINR(t.expectedLoss)}</span>
+                            </div>
+                          </div>
+
+                          {/* Retention lever pricing */}
+                          <div>
+                            <div className="mono" style={{ fontSize: 9, color: "#F5A524", letterSpacing: "0.08em", marginBottom: 5 }}>RETENTION LEVERS PRICED AGAINST THAT LOSS</div>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9.5 }}>
+                              <thead>
+                                <tr style={{ color: "#5C7891" }}>
+                                  {["Lever", "Yr-1 cost", "Risk →", "Saving", "Net", ""].map(h => (
+                                    <th key={h} className="mono" style={{ textAlign: h === "Lever" ? "left" : "right", padding: "3px 4px", fontSize: 8.5, fontWeight: 600 }}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {offers.map(o => (
+                                  <tr key={o.lever.key} style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+                                    <td style={{ padding: "3px 4px", color: "#DCE6F2" }}>
+                                      {o.lever.label}
+                                      <div style={{ color: "#5C7891", fontSize: 8.5 }}>
+                                        {o.ineligible ? (o.ineligibleReason || "Ineligible") : o.lever.detail}
+                                      </div>
+                                    </td>
+                                    <td className="mono" style={{ textAlign: "right", padding: "3px 4px", color: o.ineligible ? "#5C7891" : "#F2946B" }}>
+                                      {o.ineligible ? "—" : fmtMoneyShort(o.yearOneCost)}
+                                    </td>
+                                    <td className="mono" style={{ textAlign: "right", padding: "3px 4px", color: "#9FB4C8" }}>
+                                      {o.ineligible ? "—" : `${t.risk.score}→${o.residualRisk}`}
+                                    </td>
+                                    <td className="mono" style={{ textAlign: "right", padding: "3px 4px", color: "#8CE99A" }}>
+                                      {o.ineligible ? "—" : fmtMoneyShort(o.expectedSaving)}
+                                    </td>
+                                    <td className="mono" style={{ textAlign: "right", padding: "3px 4px", color: o.ineligible ? "#5C7891" : (o.netBenefit >= 0 ? "#8CE99A" : "#F26B6B"), fontWeight: 700 }}>
+                                      {o.ineligible ? "—" : fmtMoneyShort(o.netBenefit)}
+                                    </td>
+                                    <td style={{ textAlign: "right", padding: "3px 4px" }}>
+                                      <span className="mono" style={{
+                                        fontSize: 8, padding: "1px 5px", borderRadius: 7,
+                                        background: o.ineligible ? "rgba(255,255,255,0.06)" : (o.verdict === "RETAIN" ? "rgba(140,233,154,0.14)" : "rgba(242,107,107,0.14)"),
+                                        color: o.ineligible ? "#7C93AA" : (o.verdict === "RETAIN" ? "#8CE99A" : "#F26B6B")
+                                      }}>
+                                        {o.ineligible ? "INELIGIBLE" : o.verdict}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+
+                            <div className="mono" style={{ fontSize: 9, color: "#F5A524", letterSpacing: "0.08em", margin: "10px 0 5px" }}>IF THEY LEAVE — WHO COVERS THE SEAT</div>
+                            {t.successors.length === 0 ? (
+                              <div style={{ fontSize: 10, color: "#F26B6B" }}>
+                                No internal successor. A full external search at {gradeEcon(t.desig).daysToFill} days and {fmtINR(onboardingCostModel(t.desig).total)} of onboarding cost would be required.
+                              </div>
+                            ) : t.successors.map((s, i) => (
+                              <div key={i} style={{ fontSize: 10, color: "#9FB4C8", padding: "2px 0" }}>
+                                <span style={{ color: "#F4F7FB", fontWeight: 600 }}>{s.emp.name}</span>
+                                <span className="mono" style={{ color: "#8CE99A", marginLeft: 6, fontSize: 9 }}>{s.mode}</span>
+                                <span className="mono" style={{ color: "#5C7891", marginLeft: 6, fontSize: 9 }}>fit {s.fitScore}%{s.cascades ? " · cascades a vacancy" : ""}</span>
+                                <div style={{ color: "#5C7891", fontSize: 9 }}>{s.note}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── TAB: Vacancies & Succession ────────────────────────────────────── */}
+        {finTab === "vacancy" && (
+          <div style={{ marginTop: 12 }}>
+            {openVacancies.length === 0 ? (
+              <div style={{ padding: 20, textAlign: "center", color: "#5C7891", fontSize: 11 }}>
+                No open vacancies. Seats open automatically when an employee is offboarded or an internal promotion cascades.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
+                {openVacancies.map(v => {
+                  const active = (db.emp_docs || []).filter(e => !e.status?.includes("Inactive"));
+                  const cands = findReplacementCandidates({ id: "__v__", designation: v.grade, department: v.dept, dept: v.dept }, active, ratingOf);
+                  const overdue = v.daysOpen > (v.expectedDaysToFill || 30);
+                  return (
+                    <div key={v.id} style={{
+                      background: "#0D1420", border: `1px solid ${overdue ? "rgba(242,107,107,0.45)" : "rgba(242,184,75,0.3)"}`,
+                      borderRadius: 6, padding: "10px 12px"
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "#F4F7FB" }}>{v.grade}</div>
+                          <div className="mono" style={{ fontSize: 9.5, color: "#7C93AA" }}>{v.dept} · {v.id}</div>
+                        </div>
+                        <span className="mono" style={{ fontSize: 8.5, padding: "2px 6px", borderRadius: 8, background: overdue ? "rgba(242,107,107,0.14)" : "rgba(242,184,75,0.14)", color: overdue ? "#F26B6B" : "#F2B84B", border: `1px solid ${overdue ? "rgba(242,107,107,0.4)" : "rgba(242,184,75,0.4)"}`, whiteSpace: "nowrap" }}>
+                          {v.daysOpen}d open
+                        </span>
+                      </div>
+
+                      <div style={{ fontSize: 9.5, color: "#5C7891", marginTop: 4 }}>{v.causedBy}</div>
+
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 8 }}>
+                        <div>
+                          <div className="mono" style={{ fontSize: 8, color: "#7C93AA", textTransform: "uppercase" }}>Daily output loss</div>
+                          <div className="mono" style={{ fontSize: 12, fontWeight: 700, color: "#F2946B" }}>{fmtMoneyShort(v.dailyLoss)}</div>
+                        </div>
+                        <div>
+                          <div className="mono" style={{ fontSize: 8, color: "#7C93AA", textTransform: "uppercase" }}>Lost so far</div>
+                          <div className="mono" style={{ fontSize: 12, fontWeight: 700, color: "#F26B6B" }}>{fmtMoneyShort(v.cumulativeLoss)}</div>
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 8, paddingTop: 7, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+                        <div className="mono" style={{ fontSize: 8, color: "#7C93AA", textTransform: "uppercase", marginBottom: 3 }}>Succession bench</div>
+                        {cands.length === 0 ? (
+                          <div style={{ fontSize: 10, color: "#F26B6B" }}>
+                            Empty — external hire only ({fmtINR(onboardingCostModel(v.grade).total)} onboarding, ~{gradeEcon(v.grade).daysToFill}d lead time)
+                          </div>
+                        ) : cands.slice(0, 2).map((c, i) => (
+                          <div key={i} style={{ fontSize: 10, color: "#9FB4C8" }}>
+                            <span style={{ color: "#8CE99A", fontWeight: 600 }}>{c.emp.name}</span>
+                            <span className="mono" style={{ fontSize: 9, color: "#5C7891" }}> · {c.mode} · fit {c.fitScore}%</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      <button className="btn" disabled={!financeView || running} onClick={() => actionFillVacancy(v.id)}
+                        style={{ width: "100%", marginTop: 8, textAlign: "center", padding: "5px", fontSize: 10, borderColor: "rgba(140,233,154,0.4)", color: "#8CE99A" }}>
+                        Fill This Seat
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Closed vacancy history */}
+            {(db.attrition || []).filter(r => r.type === "Vacancy" && r.status !== "Open").length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <div className="mono" style={{ fontSize: 9, color: "#7C93AA", letterSpacing: "0.08em", marginBottom: 5 }}>CLOSED VACANCIES</div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                  <thead>
+                    <tr style={{ color: "#5C7891", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                      {["Seat", "Department", "Filled by", "Route", "Realised loss"].map(h => (
+                        <th key={h} className="mono" style={{ textAlign: h === "Realised loss" ? "right" : "left", padding: "4px 6px", fontSize: 8.5, fontWeight: 600 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(db.attrition || []).filter(r => r.type === "Vacancy" && r.status !== "Open").map(v => (
+                      <tr key={v.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                        <td style={{ padding: "4px 6px", color: "#DCE6F2" }}>{v.grade}</td>
+                        <td style={{ padding: "4px 6px", color: "#9FB4C8" }}>{v.dept}</td>
+                        <td style={{ padding: "4px 6px", color: "#8CE99A" }}>{v.filledBy || "—"}</td>
+                        <td className="mono" style={{ padding: "4px 6px", color: "#7C93AA", fontSize: 9 }}>{v.fillMode || v.status}</td>
+                        <td className="mono" style={{ padding: "4px 6px", color: "#F26B6B", textAlign: "right" }}>{fmtMoneyShort(v.realisedLoss || 0)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── TAB: Per-Employee Unit Economics ───────────────────────────────── */}
+        {finTab === "roi" && (
+          <div style={{ marginTop: 12, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10.5 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                  {["Employee", "Grade", "Dept", "Tenure", "Annual Cost", "Annual Value", "Margin / yr", "Onboarding", "Break-even", "Net to date", "Verdict"].map(h => (
+                    <th key={h} className="mono" style={{ textAlign: ["Employee", "Grade", "Dept", "Verdict"].includes(h) ? "left" : "right", padding: "7px 8px", color: "#7C93AA", fontSize: 9, letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[...workforceTwin].sort((a, b) => b.roi.steadyMargin - a.roi.steadyMargin).map(t => {
+                  const vColor = t.roi.verdict === "Profitable" ? "#8CE99A" : t.roi.verdict === "Loss-making" ? "#F26B6B" : "#F2B84B";
+                  return (
+                    <tr key={t.emp.id} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+                      <td style={{ padding: "6px 8px", color: "#F4F7FB", fontWeight: 600, whiteSpace: "nowrap" }}>{t.emp.name}</td>
+                      <td style={{ padding: "6px 8px", color: "#9FB4C8", whiteSpace: "nowrap" }}>{t.desig}</td>
+                      <td style={{ padding: "6px 8px", color: "#7C93AA", whiteSpace: "nowrap" }}>{t.dept}</td>
+                      <td className="mono" style={{ textAlign: "right", padding: "6px 8px", color: "#9FB4C8" }}>{t.roi.tenureMonths}mo</td>
+                      <td className="mono" style={{ textAlign: "right", padding: "6px 8px", color: "#F2946B" }}>{fmtMoneyShort(t.roi.cost.total)}</td>
+                      <td className="mono" style={{ textAlign: "right", padding: "6px 8px", color: "#7DD3FC" }}>{fmtMoneyShort(t.roi.annualValue)}</td>
+                      <td className="mono" style={{ textAlign: "right", padding: "6px 8px", color: t.roi.steadyMargin >= 0 ? "#8CE99A" : "#F26B6B", fontWeight: 700 }}>{fmtMoneyShort(t.roi.steadyMargin)}</td>
+                      <td className="mono" style={{ textAlign: "right", padding: "6px 8px", color: "#7C93AA" }}>{fmtMoneyShort(t.roi.onboarding.total)}</td>
+                      <td className="mono" style={{ textAlign: "right", padding: "6px 8px", color: "#9FB4C8" }}>{t.roi.breakEvenMonths != null ? `${t.roi.breakEvenMonths}mo` : "never"}</td>
+                      <td className="mono" style={{ textAlign: "right", padding: "6px 8px", color: t.roi.netToDate >= 0 ? "#8CE99A" : "#F2B84B" }}>{fmtMoneyShort(t.roi.netToDate)}</td>
+                      <td style={{ padding: "6px 8px" }}>
+                        <span className="mono" style={{ fontSize: 8.5, padding: "2px 6px", borderRadius: 8, background: `${vColor}1F`, color: vColor, border: `1px solid ${vColor}55`, whiteSpace: "nowrap" }}>
+                          {t.roi.verdict}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div style={{ marginTop: 8, fontSize: 9.5, color: "#5C7891", lineHeight: 1.6 }}>
+              <strong style={{ color: "#7C93AA" }}>Annual cost</strong> = daily rate x 30 x 12, plus {Math.round(STATUTORY_LOAD * 100)}% employer statutory load (PF, ESI, gratuity accrual, insurance), plus per-grade workspace and tooling overhead. <strong style={{ color: "#7C93AA" }}>Annual value</strong> is the modelled output of a fully-ramped person at that grade. <strong style={{ color: "#7C93AA" }}>Break-even</strong> is how long the steady-state margin takes to repay the one-time onboarding spend and the ramp-up productivity drag. <strong style={{ color: "#7C93AA" }}>Net to date</strong> is what this person has actually contributed so far — a negative number means the company has not yet earned back what it spent to hire them, which is exactly why an early exit hurts.
+            </div>
+          </div>
+        )}
+
+        {/* ── TAB: What-If Scenario Simulator ────────────────────────────────── */}
+        {finTab === "scenario" && (
+          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "300px 1fr", gap: 14 }}>
+            {/* Levers */}
+            <div style={{ background: "#0D1420", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 6, padding: 12 }}>
+              <div className="mono" style={{ fontSize: 9, color: "#F5A524", letterSpacing: "0.08em", marginBottom: 10 }}>SCENARIO LEVERS</div>
+
+              <label style={{ display: "block", marginBottom: 12 }}>
+                <div style={{ fontSize: 10.5, color: "#DCE6F2", marginBottom: 4 }}>
+                  Blanket salary hike: <span className="mono" style={{ color: "#8CE99A", fontWeight: 700 }}>{scenario.blanketHikePct}%</span>
+                </div>
+                <input type="range" min="0" max="25" step="1" value={scenario.blanketHikePct}
+                  onChange={e => setScenario(s => ({ ...s, blanketHikePct: Number(e.target.value) }))}
+                  style={{ width: "100%", accentColor: "#8CE99A" }} />
+                <div style={{ fontSize: 9, color: "#5C7891" }}>Raises run-rate cost but lowers flight risk across the board.</div>
+              </label>
+
+              <label style={{ display: "block", marginBottom: 12 }}>
+                <div style={{ fontSize: 10.5, color: "#DCE6F2", marginBottom: 4 }}>
+                  Market attrition shock: <span className="mono" style={{ color: "#F26B6B", fontWeight: 700 }}>+{scenario.attritionShockPct} pts</span>
+                </div>
+                <input type="range" min="0" max="40" step="2" value={scenario.attritionShockPct}
+                  onChange={e => setScenario(s => ({ ...s, attritionShockPct: Number(e.target.value) }))}
+                  style={{ width: "100%", accentColor: "#F26B6B" }} />
+                <div style={{ fontSize: 9, color: "#5C7891" }}>A competitor hiring spree pushing everyone's risk up.</div>
+              </label>
+
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, cursor: "pointer" }}>
+                <input type="checkbox" checked={scenario.hiringFreeze}
+                  onChange={e => setScenario(s => ({ ...s, hiringFreeze: e.target.checked }))}
+                  style={{ accentColor: "#F2B84B" }} />
+                <span style={{ fontSize: 10.5, color: "#DCE6F2" }}>Hiring freeze — leave every vacant seat unfilled</span>
+              </label>
+
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input type="checkbox" checked={scenario.retainCriticalOnly}
+                  onChange={e => setScenario(s => ({ ...s, retainCriticalOnly: e.target.checked }))}
+                  style={{ accentColor: "#8CE99A" }} />
+                <span style={{ fontSize: 10.5, color: "#DCE6F2" }}>Extra retention focus on leadership roles</span>
+              </label>
+
+              <button className="btn" onClick={() => setScenario({ hiringFreeze: false, blanketHikePct: 0, attritionShockPct: 0, retainCriticalOnly: true })}
+                style={{ width: "100%", marginTop: 12, textAlign: "center", padding: "5px", fontSize: 10 }}>
+                Reset to baseline
+              </button>
+
+              <div style={{ marginTop: 10, fontSize: 9, color: "#5C7891", lineHeight: 1.6 }}>
+                Nothing here touches the live tables. The twin re-runs the same cost, risk and vacancy model under your assumptions so you can see the outcome before committing to it.
+              </div>
+            </div>
+
+            {/* Projection */}
+            <div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
+                {[
+                  { label: "Payroll run-rate", base: scenarioResult.base.cost, proj: scenarioResult.projected.cost, invert: true },
+                  { label: "Modelled output", base: scenarioResult.base.value, proj: scenarioResult.projected.value, invert: false },
+                  { label: "Expected attrition loss", base: scenarioResult.base.expectedLoss, proj: scenarioResult.projected.expectedLoss, invert: true },
+                  { label: "Net P&L (risk-adjusted)", base: scenarioResult.base.netPLWithRisk, proj: scenarioResult.projected.netPL, invert: false },
+                ].map(m => {
+                  const diff = m.proj - m.base;
+                  const good = m.invert ? diff <= 0 : diff >= 0;
+                  return (
+                    <div key={m.label} style={{ background: "#0D1420", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 6, padding: "9px 11px" }}>
+                      <div className="mono" style={{ fontSize: 8.5, color: "#7C93AA", textTransform: "uppercase", letterSpacing: "0.06em" }}>{m.label}</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: "#F4F7FB", marginTop: 2 }}>{fmtMoneyShort(m.proj)}</div>
+                      <div className="mono" style={{ fontSize: 9, color: "#5C7891" }}>
+                        base {fmtMoneyShort(m.base)}
+                        <span style={{ color: good ? "#8CE99A" : "#F26B6B", marginLeft: 6, fontWeight: 700 }}>
+                          {diff >= 0 ? "▲" : "▼"} {fmtMoneyShort(Math.abs(diff))}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div style={{
+                marginTop: 10, background: "#0D1420", borderRadius: 6, padding: "12px 14px",
+                border: `1px solid ${scenarioResult.delta >= 0 ? "rgba(140,233,154,0.35)" : "rgba(242,107,107,0.35)"}`
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  {scenarioResult.delta >= 0
+                    ? <CheckCircle2 size={15} color="#8CE99A" />
+                    : <AlertTriangle size={15} color="#F26B6B" />}
+                  <span style={{ fontSize: 12.5, fontWeight: 700, color: scenarioResult.delta >= 0 ? "#8CE99A" : "#F26B6B" }}>
+                    {scenarioResult.delta >= 0 ? "Scenario improves the bottom line" : "Scenario destroys value"} by {fmtMoneyShort(Math.abs(scenarioResult.delta))}/yr
+                  </span>
+                </div>
+                <div style={{ fontSize: 10.5, color: "#9FB4C8", lineHeight: 1.7 }}>
+                  A <strong style={{ color: "#F4F7FB" }}>{scenario.blanketHikePct}% blanket hike</strong> adds{" "}
+                  <span className="mono" style={{ color: "#F2946B" }}>{fmtINR(scenarioResult.projected.retentionSpend)}</span> to the annual wage bill
+                  and averts <span className="mono" style={{ color: "#8CE99A" }}>{fmtINR(Math.max(0, scenarioResult.riskAverted))}</span> of
+                  probability-weighted attrition loss
+                  {scenario.attritionShockPct > 0 && <> against a <strong style={{ color: "#F26B6B" }}>+{scenario.attritionShockPct} point market shock</strong></>}.
+                  {scenario.hiringFreeze && <> The hiring freeze leaves <strong style={{ color: "#F2B84B" }}>{workforceKPIs.vacant} seat(s)</strong> empty, forgoing <span className="mono" style={{ color: "#F26B6B" }}>{fmtINR(scenarioResult.projected.frozenOutputLoss)}</span> of output.</>}
+                  {" "}Headcount holds at <strong style={{ color: "#F4F7FB" }}>{scenarioResult.projected.headcount}</strong>.
+                </div>
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.06)", fontSize: 10, color: "#7C93AA" }}>
+                  <strong style={{ color: "#F5A524" }}>Recommendation: </strong>
+                  {scenarioResult.delta >= 0
+                    ? `Proceed. Every rupee of the hike returns about ${scenarioResult.projected.retentionSpend > 0 ? (scenarioResult.riskAverted / scenarioResult.projected.retentionSpend).toFixed(2) : "∞"} rupees of avoided attrition cost. Apply it selectively from the Attrition Risk tab to squeeze more out of the same spend.`
+                    : `Hold. The spend outruns the risk it removes. Target the ${workforceKPIs.atRisk} high-risk individual(s) on the Attrition Risk tab instead of raising everyone — the same money buys far more retention when aimed at the people who would actually leave.`}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ═══════════════════════════════════════════════════════════════════════ */}
@@ -3459,6 +6168,7 @@ export default function ModuleSimulation() {
                                     Cancel
                                   </button>
                                 )}
+
                                 {/* Item 2.4: Notice Period Quick Action: Final Clearance & F&F */}
                                 {dbTab === "emp_docs" && r.status?.includes("Notice Period") && (
                                   <button
@@ -3679,54 +6389,613 @@ export default function ModuleSimulation() {
           </div>
         </div>
       )}
-      {/* ── Add Employee Modal ─────────────────────────────────────────────── */}
+      {/* ── Add Employee Modal (2-Step Onboarding Wizard) ──────────────────── */}
       {showEmpForm && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(4,8,14,0.78)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }}>
-          <div style={{ width: 400, background: "#0D1420", border: "1px solid rgba(79,209,197,0.4)", borderRadius: 6, padding: 22 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
-              <div style={{ fontWeight: 700, fontSize: 15, color: "#F4F7FB" }}>Add New Employee</div>
+          <div style={{ width: 480, maxWidth: "95vw", background: "#0D1420", border: "1px solid rgba(79,209,197,0.4)", borderRadius: 8, padding: 22, boxShadow: "0 24px 48px rgba(0,0,0,0.6)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 16, color: "#F4F7FB" }}>
+                  {onboardStep === 1 ? "Add New Employee — Hire Requisition" : "New Hire Onboarding Checklist"}
+                </div>
+                <div style={{ fontSize: 11, color: "#7C93AA", marginTop: 2 }}>
+                  {onboardStep === 1 ? "Step 1 of 2: Position details & vacancy verification" : "Step 2 of 2: Provisioning, leave quotas & IT assets"}
+                </div>
+              </div>
               <X size={16} style={{ cursor: "pointer", color: "#7C93AA" }} onClick={() => setShowEmpForm(false)} />
             </div>
 
-            {/* Auto Employee ID badge */}
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, padding: "8px 12px", background: "rgba(79,209,197,0.07)", border: "1px solid rgba(79,209,197,0.2)", borderRadius: 3 }}>
-              <span className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>AUTO EMP ID</span>
-              <span className="mono" style={{ fontSize: 13, color: "#4FD1C5", fontWeight: 600 }}>EMP-{idSeed}</span>
+            {/* Stepper Progress Indicator */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18, padding: "8px 12px", background: "rgba(255,255,255,0.03)", borderRadius: 6, border: "1px solid rgba(255,255,255,0.06)" }}>
+              <div
+                onClick={() => setOnboardStep(1)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, fontSize: 11,
+                  color: onboardStep === 1 ? "#4FD1C5" : "#8CE99A",
+                  fontWeight: 600, cursor: onboardStep === 2 ? "pointer" : "default"
+                }}>
+                <span style={{
+                  width: 20, height: 20, borderRadius: "50%",
+                  background: onboardStep === 1 ? "rgba(79,209,197,0.2)" : "rgba(140,233,154,0.2)",
+                  border: `1px solid ${onboardStep === 1 ? "#4FD1C5" : "#8CE99A"}`,
+                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10
+                }}>
+                  {onboardStep === 1 ? "1" : "✓"}
+                </span>
+                1. Requisition
+              </div>
+              <div style={{ flex: 1, height: 2, background: onboardStep === 2 ? "rgba(79,209,197,0.4)" : "rgba(255,255,255,0.1)", margin: "0 6px" }} />
+              <div style={{
+                display: "flex", alignItems: "center", gap: 6, fontSize: 11,
+                color: onboardStep === 2 ? "#4FD1C5" : "#5C7891",
+                fontWeight: onboardStep === 2 ? 600 : 400
+              }}>
+                <span style={{
+                  width: 20, height: 20, borderRadius: "50%",
+                  background: onboardStep === 2 ? "rgba(79,209,197,0.2)" : "rgba(255,255,255,0.05)",
+                  border: `1px solid ${onboardStep === 2 ? "#4FD1C5" : "rgba(255,255,255,0.2)"}`,
+                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10
+                }}>
+                  2
+                </span>
+                2. Provisioning Checklist
+              </div>
             </div>
 
-            <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>FULL NAME</label>
-            <input
-              autoFocus value={empFormName} onChange={(e) => setEmpFormName(e.target.value)}
-              placeholder="e.g. Priya Nair"
-              className="mono"
-              style={{ width: "100%", marginTop: 5, marginBottom: 14, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 12.5, boxSizing: "border-box" }}
-              onKeyDown={(e) => e.key === "Enter" && confirmAddEmployee()}
-            />
+            {(() => {
+              const selectedDeptBudget = budgetByDept[empFormDept];
+              const selectedDeptVacant = selectedDeptBudget ? Math.max(0, selectedDeptBudget.sanctioned - selectedDeptBudget.headcount) : 0;
+              const isSelectedDeptFull = selectedDeptBudget && selectedDeptBudget.headcount >= selectedDeptBudget.sanctioned;
+              const alumniList = (db.emp_docs || []).filter(e => e.status?.includes("Inactive"));
+              const targetAlumni = alumniList.find(e => e.id === rehireEmpId) || alumniList[0];
+              const isTechDept = ["Engineering", "Product"].includes(empFormDept);
+              const laptopModel = isTechDept ? 'MacBook Pro 16" (M3)' : "Dell Latitude 7440";
 
-            <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>DEPARTMENT</label>
-            <select
-              value={empFormDept} onChange={(e) => setEmpFormDept(e.target.value)}
-              className="mono"
-              style={{ width: "100%", marginTop: 5, marginBottom: 18, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 12.5, boxSizing: "border-box", appearance: "auto" }}>
-              {DEPT_POOL.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
+              const totalCompanyVacantSeats = Object.values(budgetByDept).reduce((sum, b) => sum + Math.max(0, b.sanctioned - b.headcount), 0);
 
-            <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>DESIGNATION</label>
-            <select
-              value={empFormDesig} onChange={(e) => setEmpFormDesig(e.target.value)}
-              className="mono"
-              style={{ width: "100%", marginTop: 5, marginBottom: 18, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 12.5, boxSizing: "border-box", appearance: "auto" }}>
-              {DESIG_POOL.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
+              const handleSwitchToNew = () => {
+                setHireMode("new");
+                setEmpFormName("");
+                const availableDept = DEPT_POOL.find(d => {
+                  const b = budgetByDept[d];
+                  return b && b.headcount < b.sanctioned;
+                }) || DEPT_POOL[0];
+                setEmpFormDept(availableDept);
+                setEmpFormDesig(DESIG_POOL[0]);
+              };
 
-            <div className="mono" style={{ fontSize: 10, color: "#4A6070", marginBottom: 14, lineHeight: 1.6 }}>
-              On submit — employee record, attendance ledger &amp; 12-day leave balance will be auto-created.
-            </div>
+              const existingDirectorInDept = (db.emp_docs || []).find(e =>
+                (e.department === empFormDept || e.dept === empFormDept) &&
+                !e.status?.includes("Inactive") &&
+                e.id !== targetAlumni?.id &&
+                (e.designation || e.desig || "").toLowerCase().includes("director")
+              );
+              const isDirectorBlocked = empFormDesig.toLowerCase().includes("director") && !!existingDirectorInDept;
 
-            <button className="btn" disabled={!empFormName.trim()} onClick={confirmAddEmployee}
-              style={{ width: "100%", textAlign: "center", borderColor: "#4FD1C5", color: "#B0EDE8", background: "rgba(79,209,197,0.1)" }}>
-              CREATE EMPLOYEE + INITIALIZE LEDGER
-            </button>
+              const handleSwitchToRehire = () => {
+                setHireMode("rehire");
+                if (alumniList.length > 0) {
+                  const target = rehireEmpId && alumniList.some(e => e.id === rehireEmpId)
+                    ? alumniList.find(e => e.id === rehireEmpId)
+                    : alumniList[0];
+                  setRehireEmpId(target.id);
+                  setEmpFormName(target.name);
+                  const dept = target.department || target.dept || DEPT_POOL[0];
+                  setEmpFormDept(dept);
+                  let desig = target.designation || target.desig || DESIG_POOL[0];
+                  if (desig.toLowerCase().includes("director")) {
+                    const hasDir = (db.emp_docs || []).some(e =>
+                      (e.department === dept || e.dept === dept) &&
+                      !e.status?.includes("Inactive") &&
+                      (e.designation || e.desig || "").toLowerCase().includes("director")
+                    );
+                    if (hasDir) desig = "Senior Manager";
+                  }
+                  setEmpFormDesig(desig);
+                }
+              };
+
+              const handleSelectAlumni = (empId) => {
+                setRehireEmpId(empId);
+                const target = alumniList.find(e => e.id === empId);
+                if (target) {
+                  setEmpFormName(target.name);
+                  const dept = target.department || target.dept || DEPT_POOL[0];
+                  setEmpFormDept(dept);
+                  let desig = target.designation || target.desig || DESIG_POOL[0];
+                  if (desig.toLowerCase().includes("director")) {
+                    const hasDir = (db.emp_docs || []).some(e =>
+                      (e.department === dept || e.dept === dept) &&
+                      !e.status?.includes("Inactive") &&
+                      (e.designation || e.desig || "").toLowerCase().includes("director")
+                    );
+                    if (hasDir) desig = "Senior Manager";
+                  }
+                  setEmpFormDesig(desig);
+                }
+              };
+
+              if (onboardStep === 1) {
+                return (
+                  <>
+                    {/* Auto Employee ID badge */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, padding: "7px 12px", background: "rgba(79,209,197,0.07)", border: "1px solid rgba(79,209,197,0.2)", borderRadius: 4 }}>
+                      <span className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>AUTO EMP ID</span>
+                      <span className="mono" style={{ fontSize: 13, color: "#4FD1C5", fontWeight: 600 }}>EMP-{idSeed}</span>
+                    </div>
+
+                    {/* Requisition Mode Dual-Tab Selector */}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+                      <button
+                        type="button"
+                        onClick={handleSwitchToNew}
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 5,
+                          border: hireMode === "new" ? "1px solid #4FD1C5" : "1px solid rgba(255,255,255,0.1)",
+                          background: hireMode === "new" ? "rgba(79,209,197,0.15)" : "rgba(255,255,255,0.02)",
+                          color: hireMode === "new" ? "#4FD1C5" : "#7C93AA",
+                          fontSize: 11,
+                          fontWeight: hireMode === "new" ? 600 : 400,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 6,
+                          transition: "all 0.15s ease"
+                        }}>
+                        <Building2 size={13} style={{ color: hireMode === "new" ? "#4FD1C5" : "#7C93AA" }} />
+                        <span>New Candidate</span>
+                        <span style={{
+                          fontSize: 9.5,
+                          padding: "1px 6px",
+                          borderRadius: 10,
+                          background: hireMode === "new" ? "#4FD1C5" : "rgba(79,209,197,0.25)",
+                          color: hireMode === "new" ? "#0D1420" : "#4FD1C5",
+                          fontWeight: 700
+                        }}>
+                          {totalCompanyVacantSeats} seats
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleSwitchToRehire}
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 5,
+                          border: hireMode === "rehire" ? "1px solid #8CE99A" : "1px solid rgba(255,255,255,0.1)",
+                          background: hireMode === "rehire" ? "rgba(140,233,154,0.15)" : "rgba(255,255,255,0.02)",
+                          color: hireMode === "rehire" ? "#8CE99A" : "#7C93AA",
+                          fontSize: 11,
+                          fontWeight: hireMode === "rehire" ? 600 : 400,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 6,
+                          transition: "all 0.15s ease"
+                        }}>
+                        <RotateCcw size={13} style={{ color: hireMode === "rehire" ? "#8CE99A" : "#7C93AA" }} />
+                        <span>Rehire Alumni</span>
+                        <span style={{
+                          fontSize: 9.5,
+                          padding: "1px 6px",
+                          borderRadius: 10,
+                          background: alumniList.length > 0
+                            ? (hireMode === "rehire" ? "#8CE99A" : "rgba(140,233,154,0.25)")
+                            : "rgba(255,255,255,0.08)",
+                          color: alumniList.length > 0
+                            ? (hireMode === "rehire" ? "#0D1420" : "#8CE99A")
+                            : "#7C93AA",
+                          fontWeight: 700
+                        }}>
+                          {alumniList.length} alumni
+                        </span>
+                      </button>
+                    </div>
+
+                    {hireMode === "rehire" ? (
+                      alumniList.length === 0 ? (
+                        <div style={{
+                          padding: "16px 14px", background: "rgba(255,255,255,0.02)",
+                          border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6,
+                          textAlign: "center", marginBottom: 14
+                        }}>
+                          <div style={{ fontSize: 13, color: "#8CE99A", fontWeight: 600, marginBottom: 4 }}>
+                            ✨ No Inactive Alumni Records
+                          </div>
+                          <div style={{ fontSize: 11, color: "#7C93AA", marginBottom: 12, lineHeight: 1.5 }}>
+                            All staff members are currently active. When an employee resigns or offboards, they are archived here for fast-track boomerang rehire.
+                          </div>
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={handleSwitchToNew}
+                            style={{ fontSize: 11, padding: "6px 14px", borderColor: "#4FD1C5", color: "#4FD1C5" }}>
+                            Switch to New Candidate →
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>
+                            SELECT EX-EMPLOYEE TO REHIRE (BOOMERANG HIRE)
+                          </label>
+                          <select
+                            value={rehireEmpId || targetAlumni?.id}
+                            onChange={(e) => handleSelectAlumni(e.target.value)}
+                            className="mono"
+                            style={{
+                              width: "100%", marginTop: 5, marginBottom: 12, padding: "8px 10px",
+                              background: "#0A0F1A", border: "1px solid rgba(140,233,154,0.35)",
+                              borderRadius: 4, color: "#8CE99A", fontSize: 11.5, boxSizing: "border-box", appearance: "auto", fontWeight: 600
+                            }}>
+                            {alumniList.map(a => (
+                              <option key={a.id} value={a.id}>
+                                {a.name} ({a.id}) — Ex-{a.designation || a.desig} · {a.department || a.dept} (Exit: {a.exitReason || "Resignation"})
+                              </option>
+                            ))}
+                          </select>
+
+                          {/* Rehire Boomerang Advantages Card */}
+                          {targetAlumni && (
+                            <div style={{
+                              padding: "10px 12px", background: "rgba(140,233,154,0.07)",
+                              border: "1px solid rgba(140,233,154,0.3)", borderRadius: 6,
+                              marginBottom: 14, fontSize: 11, color: "#DCE6F2"
+                            }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                                <div style={{ fontWeight: 600, color: "#8CE99A", display: "flex", alignItems: "center", gap: 6 }}>
+                                  🔄 Boomerang Rehire: {targetAlumni.name}
+                                </div>
+                                <span className="mono" style={{ fontSize: 9.5, color: "#7DD3FC", background: "rgba(125,211,252,0.15)", padding: "2px 6px", borderRadius: 3 }}>
+                                  {targetAlumni.id}
+                                </span>
+                              </div>
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, fontSize: 10, color: "#7C93AA" }}>
+                                <div>Past Role: <strong style={{ color: "#DCE6F2" }}>{targetAlumni.designation || targetAlumni.desig}</strong></div>
+                                <div>Past Dept: <strong style={{ color: "#DCE6F2" }}>{targetAlumni.department || targetAlumni.dept}</strong></div>
+                                <div>Agency Fee: <strong style={{ color: "#8CE99A" }}>Rs. 0 (Waived)</strong></div>
+                                <div>DB Status: <strong style={{ color: "#F2B84B" }}>Inactive ➔ Active</strong></div>
+                              </div>
+                              <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 10, color: "#8CE99A" }}>
+                                ✓ Re-activating this alumnus restores their master employee record, allocates a fresh attendance ledger, and updates PostgreSQL database status to Active.
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )
+                    ) : (
+                      <>
+                        <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>FULL NAME</label>
+                        <input
+                          autoFocus value={empFormName} onChange={(e) => setEmpFormName(e.target.value)}
+                          placeholder="e.g. Priya Nair"
+                          className="mono"
+                          style={{ width: "100%", marginTop: 5, marginBottom: 14, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 4, color: "#DCE6F2", fontSize: 12.5, boxSizing: "border-box" }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && empFormName.trim() && !isSelectedDeptFull) {
+                              setOnboardStep(2);
+                            }
+                          }}
+                        />
+                      </>
+                    )}
+
+                    <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>DEPARTMENT</label>
+                    <select
+                      value={empFormDept} onChange={(e) => setEmpFormDept(e.target.value)}
+                      className="mono"
+                      style={{ width: "100%", marginTop: 5, marginBottom: 14, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 4, color: "#DCE6F2", fontSize: 12, boxSizing: "border-box", appearance: "auto" }}>
+                      {DEPT_POOL.map((d) => {
+                        const b = budgetByDept[d];
+                        const vCount = b ? Math.max(0, b.sanctioned - b.headcount) : 0;
+                        const full = b && b.headcount >= b.sanctioned;
+                        return (
+                          <option key={d} value={d} disabled={full}>
+                            {d} {full ? "— (0 Vacant · Ceiling Full)" : `— (${vCount} vacant of ${b?.sanctioned || 0})`}
+                          </option>
+                        );
+                      })}
+                    </select>
+
+                    <label className="mono" style={{ fontSize: 10, color: "#5C7891", letterSpacing: "0.08em" }}>DESIGNATION</label>
+                    <select
+                      value={empFormDesig} onChange={(e) => setEmpFormDesig(e.target.value)}
+                      className="mono"
+                      style={{ width: "100%", marginTop: 5, marginBottom: 14, padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 4, color: "#DCE6F2", fontSize: 12, boxSizing: "border-box", appearance: "auto" }}>
+                      {DESIG_POOL.map((d) => <option key={d} value={d}>{d}</option>)}
+                    </select>
+
+                    {isDirectorBlocked ? (
+                      <div style={{
+                        padding: "8px 10px", background: "rgba(242,107,107,0.1)",
+                        border: "1px solid rgba(242,107,107,0.35)", borderRadius: 4,
+                        marginBottom: 16, fontSize: 10.5, color: "#F26B6B", display: "flex", alignItems: "flex-start", gap: 7
+                      }}>
+                        <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                        <div style={{ lineHeight: 1.5 }}>
+                          <strong>Director Seat Occupied:</strong> {empFormDept} already has an active Director ({existingDirectorInDept?.name}). Only 1 Director is permitted per department. Please select Senior Manager or another grade.
+                        </div>
+                      </div>
+                    ) : hireMode === "rehire" ? (
+                      <div style={{
+                        padding: "8px 10px", background: "rgba(140,233,154,0.08)",
+                        border: "1px solid rgba(140,233,154,0.3)", borderRadius: 4,
+                        marginBottom: 16, fontSize: 10.5, color: "#8CE99A", display: "flex", alignItems: "flex-start", gap: 7
+                      }}>
+                        <CheckCircle2 size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                        <div style={{ lineHeight: 1.5 }}>
+                          <strong>Boomerang Rehire Ready:</strong> Restoring <strong>{empFormName || "Alumni"}</strong> to <strong>{empFormDept}</strong> as <strong>{empFormDesig}</strong>.
+                        </div>
+                      </div>
+                    ) : isSelectedDeptFull ? (
+                      <div style={{
+                        padding: "8px 10px", background: "rgba(242,107,107,0.1)",
+                        border: "1px solid rgba(242,107,107,0.35)", borderRadius: 4,
+                        marginBottom: 16, fontSize: 10.5, color: "#F26B6B", display: "flex", alignItems: "flex-start", gap: 7
+                      }}>
+                        <XCircle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                        <div style={{ lineHeight: 1.5 }}>
+                          <strong>Headcount Ceiling Full:</strong> {empFormDept} has {selectedDeptBudget?.headcount}/{selectedDeptBudget?.sanctioned} seats filled (0 vacancies). Go to <strong>Revise Budget</strong> to expand sanctioned strength before adding staff.
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{
+                        padding: "8px 10px", background: "rgba(125,211,252,0.08)",
+                        border: "1px solid rgba(125,211,252,0.22)", borderRadius: 4,
+                        marginBottom: 16, fontSize: 10.5, color: "#7DD3FC", display: "flex", alignItems: "flex-start", gap: 7
+                      }}>
+                        <Building2 size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+                        <div style={{ lineHeight: 1.5 }}>
+                          <strong>Sanctioned Expansion Hire:</strong> {selectedDeptVacant} vacancy slot(s) available in {empFormDept} ({selectedDeptBudget?.headcount}/{selectedDeptBudget?.sanctioned} filled).
+                        </div>
+                      </div>
+                    )}
+
+                    <button
+                      className="btn"
+                      disabled={!empFormName.trim() || isSelectedDeptFull || isDirectorBlocked || (hireMode === "rehire" && alumniList.length === 0)}
+                      onClick={() => setOnboardStep(2)}
+                      style={{
+                        width: "100%", textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                        borderColor: isSelectedDeptFull || isDirectorBlocked ? "rgba(242,107,107,0.4)" : "#4FD1C5",
+                        color: isSelectedDeptFull || isDirectorBlocked ? "#F26B6B" : "#0D1420",
+                        background: isSelectedDeptFull || isDirectorBlocked ? "rgba(242,107,107,0.08)" : "linear-gradient(135deg, #4FD1C5, #38B2AC)",
+                        opacity: isSelectedDeptFull || isDirectorBlocked || !empFormName.trim() ? 0.6 : 1,
+                        cursor: isSelectedDeptFull || isDirectorBlocked || !empFormName.trim() ? "not-allowed" : "pointer",
+                        fontWeight: 700, padding: "10px 14px", borderRadius: 4
+                      }}>
+                      {isSelectedDeptFull
+                        ? "CANNOT HIRE — CEILING FULL"
+                        : isDirectorBlocked
+                          ? "CANNOT HIRE — DIRECTOR SEAT OCCUPIED"
+                          : !empFormName.trim()
+                            ? (hireMode === "rehire" ? "SELECT ALUMNI TO PROCEED" : "ENTER FULL NAME TO PROCEED")
+                            : hireMode === "rehire"
+                              ? `Proceed to Rehire ${empFormName} (Step 2) →`
+                              : "Proceed to Provisioning Checklist (Step 2) →"}
+                    </button>
+                  </>
+                );
+              }
+
+              // Step 2: Onboarding Provisioning Checklist
+              return (
+                <>
+                  {/* Candidate Summary Strip */}
+                  <div style={{
+                    padding: "9px 12px", background: "rgba(79,209,197,0.06)",
+                    border: "1px solid rgba(79,209,197,0.25)", borderRadius: 6,
+                    marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center"
+                  }}>
+                    <div>
+                      <div style={{ color: "#F4F7FB", fontWeight: 600, fontSize: 13.5 }}>
+                        {empFormName.trim() || "New Hire"}
+                      </div>
+                      <div className="mono" style={{ color: "#7C93AA", fontSize: 10.5, marginTop: 2 }}>
+                        {empFormDesig} · <span style={{ color: "#4FD1C5" }}>{empFormDept}</span>
+                        {hireMode === "rehire" && targetAlumni && (
+                          <span style={{ color: "#8CE99A", marginLeft: 6 }}>· 🔄 Boomerang Rehire</span>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <span className="mono" style={{ fontSize: 10, color: "#8CE99A", background: "rgba(140,233,154,0.12)", padding: "2px 7px", borderRadius: 3, border: "1px solid rgba(140,233,154,0.3)" }}>
+                        {hireMode === "rehire" && targetAlumni ? targetAlumni.id : `EMP-${idSeed}`}
+                      </span>
+                      <div className="mono" style={{ fontSize: 9.5, color: "#5C7891", marginTop: 3 }}>
+                        Daily: ₹{(DESIGNATION_RATES[empFormDesig] || 1000).toLocaleString()}/day
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+                    {/* Item 1: 3-Tier Leave Quotas */}
+                    <div style={{
+                      padding: "10px 12px", background: "#0A0F1A",
+                      border: "1px solid rgba(125,211,252,0.25)", borderRadius: 6
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                          <CalendarCheck size={14} style={{ color: "#7DD3FC" }} />
+                          <span style={{ fontSize: 12, fontWeight: 600, color: "#E2E8F0" }}>3-Tier Leave Quota Allocation</span>
+                        </div>
+                        <span className="mono" style={{ fontSize: 9.5, color: "#7DD3FC", background: "rgba(125,211,252,0.12)", padding: "2px 6px", borderRadius: 3 }}>
+                          Total: {(Number(onboardLeaves.annual) || 0) + (Number(onboardLeaves.casual) || 0) + (Number(onboardLeaves.sick) || 0)} Days Credited
+                        </span>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                        <div>
+                          <label className="mono" style={{ fontSize: 9, color: "#7C93AA", display: "block", marginBottom: 3 }}>ANNUAL (DAYS)</label>
+                          <input
+                            type="number" min="0" max="30"
+                            value={onboardLeaves.annual}
+                            onChange={(e) => setOnboardLeaves(prev => ({ ...prev, annual: Math.max(0, parseInt(e.target.value) || 0) }))}
+                            className="mono"
+                            style={{ width: "100%", padding: "5px 8px", background: "#060A12", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 4, color: "#7DD3FC", fontSize: 12, fontWeight: 600, boxSizing: "border-box" }}
+                          />
+                        </div>
+                        <div>
+                          <label className="mono" style={{ fontSize: 9, color: "#7C93AA", display: "block", marginBottom: 3 }}>CASUAL (DAYS)</label>
+                          <input
+                            type="number" min="0" max="20"
+                            value={onboardLeaves.casual}
+                            onChange={(e) => setOnboardLeaves(prev => ({ ...prev, casual: Math.max(0, parseInt(e.target.value) || 0) }))}
+                            className="mono"
+                            style={{ width: "100%", padding: "5px 8px", background: "#060A12", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 4, color: "#8CE99A", fontSize: 12, fontWeight: 600, boxSizing: "border-box" }}
+                          />
+                        </div>
+                        <div>
+                          <label className="mono" style={{ fontSize: 9, color: "#7C93AA", display: "block", marginBottom: 3 }}>SICK (DAYS)</label>
+                          <input
+                            type="number" min="0" max="20"
+                            value={onboardLeaves.sick}
+                            onChange={(e) => setOnboardLeaves(prev => ({ ...prev, sick: Math.max(0, parseInt(e.target.value) || 0) }))}
+                            className="mono"
+                            style={{ width: "100%", padding: "5px 8px", background: "#060A12", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 4, color: "#F2B84B", fontSize: 12, fontWeight: 600, boxSizing: "border-box" }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Item 2: IT Workstation & Hardware Allocation */}
+                    <div
+                      onClick={() => setOnboardLaptop(!onboardLaptop)}
+                      style={{
+                        padding: "9px 12px", background: onboardLaptop ? "rgba(242,148,107,0.06)" : "#0A0F1A",
+                        border: `1px solid ${onboardLaptop ? "rgba(242,148,107,0.35)" : "rgba(255,255,255,0.08)"}`,
+                        borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "flex-start", gap: 10,
+                        transition: "all 0.15s ease"
+                      }}>
+                      {onboardLaptop ? <CheckSquare size={16} style={{ color: "#F2946B", flexShrink: 0, marginTop: 2 }} /> : <Square size={16} style={{ color: "#5C7891", flexShrink: 0, marginTop: 2 }} />}
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: onboardLaptop ? "#F4F7FB" : "#7C93AA" }}>
+                            IT Hardware & Workstation Setup
+                          </span>
+                          <span className="mono" style={{ fontSize: 9.5, color: "#F2946B", background: "rgba(242,148,107,0.12)", padding: "2px 6px", borderRadius: 3 }}>
+                            {laptopModel}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 10, color: "#7C93AA", marginTop: 2 }}>
+                          Allocate dedicated corporate laptop into <strong>company_assets</strong> table &amp; issue RFID badge.
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Item 3: Mandatory Induction & Compliance Training */}
+                    <div
+                      onClick={() => setOnboardTraining(!onboardTraining)}
+                      style={{
+                        padding: "9px 12px", background: onboardTraining ? "rgba(216,166,242,0.06)" : "#0A0F1A",
+                        border: `1px solid ${onboardTraining ? "rgba(216,166,242,0.35)" : "rgba(255,255,255,0.08)"}`,
+                        borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "flex-start", gap: 10,
+                        transition: "all 0.15s ease"
+                      }}>
+                      {onboardTraining ? <CheckSquare size={16} style={{ color: "#D8A6F2", flexShrink: 0, marginTop: 2 }} /> : <Square size={16} style={{ color: "#5C7891", flexShrink: 0, marginTop: 2 }} />}
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: onboardTraining ? "#F4F7FB" : "#7C93AA" }}>
+                            Workplace Ethics & POSH Induction Track
+                          </span>
+                          <span className="mono" style={{ fontSize: 9.5, color: "#D8A6F2", background: "rgba(216,166,242,0.12)", padding: "2px 6px", borderRadius: 3 }}>
+                            Mandatory LMS
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 10, color: "#7C93AA", marginTop: 2 }}>
+                          Assign 4-module statutory compliance course and schedule 30-day compliance audit.
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Item 4: Biometric IoT Punch Profile */}
+                    <div
+                      onClick={() => setOnboardBiometric(!onboardBiometric)}
+                      style={{
+                        padding: "9px 12px", background: onboardBiometric ? "rgba(79,209,197,0.06)" : "#0A0F1A",
+                        border: `1px solid ${onboardBiometric ? "rgba(79,209,197,0.35)" : "rgba(255,255,255,0.08)"}`,
+                        borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "flex-start", gap: 10,
+                        transition: "all 0.15s ease"
+                      }}>
+                      {onboardBiometric ? <CheckSquare size={16} style={{ color: "#4FD1C5", flexShrink: 0, marginTop: 2 }} /> : <Square size={16} style={{ color: "#5C7891", flexShrink: 0, marginTop: 2 }} />}
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: onboardBiometric ? "#F4F7FB" : "#7C93AA" }}>
+                            Biometric IoT Access Profile
+                          </span>
+                          <span className="mono" style={{ fontSize: 9.5, color: "#4FD1C5", background: "rgba(79,209,197,0.12)", padding: "2px 6px", borderRadius: 3 }}>
+                            Fingerprint Punch
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 10, color: "#7C93AA", marginTop: 2 }}>
+                          Register key in biometric sensor controller for instant terminal check-in synchronization.
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Item 5: Statutory Payroll Setup */}
+                    <div
+                      onClick={() => setOnboardStatutory(!onboardStatutory)}
+                      style={{
+                        padding: "9px 12px", background: onboardStatutory ? "rgba(140,233,154,0.06)" : "#0A0F1A",
+                        border: `1px solid ${onboardStatutory ? "rgba(140,233,154,0.35)" : "rgba(255,255,255,0.08)"}`,
+                        borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "flex-start", gap: 10,
+                        transition: "all 0.15s ease"
+                      }}>
+                      {onboardStatutory ? <CheckSquare size={16} style={{ color: "#8CE99A", flexShrink: 0, marginTop: 2 }} /> : <Square size={16} style={{ color: "#5C7891", flexShrink: 0, marginTop: 2 }} />}
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: onboardStatutory ? "#F4F7FB" : "#7C93AA" }}>
+                            Statutory PF & Payroll Ledger Enrollment
+                          </span>
+                          <span className="mono" style={{ fontSize: 9.5, color: "#8CE99A", background: "rgba(140,233,154,0.12)", padding: "2px 6px", borderRadius: 3 }}>
+                            PF 12% + Tax
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 10, color: "#7C93AA", marginTop: 2 }}>
+                          Initialize EPF/ESI statutory deduction ledger and auto-link to monthly payroll batch.
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Step 2 Action Buttons */}
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <button
+                      className="btn"
+                      onClick={() => setOnboardStep(1)}
+                      style={{
+                        flex: "0 0 100px", textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                        borderColor: "rgba(255,255,255,0.2)", color: "#94A3B8", background: "rgba(255,255,255,0.04)",
+                        padding: "10px 14px", borderRadius: 4, cursor: "pointer"
+                      }}>
+                      <ArrowLeft size={14} />
+                      Back
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={confirmAddEmployee}
+                      style={{
+                        flex: 1, textAlign: "center",
+                        borderColor: "#4FD1C5", color: "#060A12",
+                        background: "linear-gradient(135deg, #4FD1C5, #38B2AC)",
+                        fontWeight: 700, letterSpacing: "0.03em",
+                        boxShadow: "0 0 16px rgba(79,209,197,0.35)",
+                        padding: "10px 14px", borderRadius: 4, cursor: "pointer"
+                      }}>
+                      {hireMode === "rehire"
+                        ? `CONFIRM REHIRE & RESTORE ${empFormName.toUpperCase()} TO ACTIVE`
+                        : hireMode === "vacancy" && currentVac
+                          ? `CONFIRM & BACKFILL VACANCY ${currentVac.id}`
+                          : exactMatchingVacancy
+                            ? `CONFIRM & BACKFILL VACANCY ${exactMatchingVacancy.id}`
+                            : "CONFIRM ONBOARDING & PROVISION"}
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -4039,6 +7308,7 @@ export default function ModuleSimulation() {
           return_asset: { title: "Return Company Asset", border: "rgba(242,148,107,0.4)", accent: "#F2946B" },
           manage_asset: { title: "Company Asset Management", border: "rgba(242,148,107,0.4)", accent: "#F2946B" },
           loan: { title: "Apply for Loan", border: "rgba(147,196,212,0.4)", accent: "#93C4D4" },
+          comp_incentives: { title: "Compensation & Incentives", border: "rgba(245,158,11,0.45)", accent: "#F59E0B" },
           allowance: { title: "Add Special Allowance", border: "rgba(242,107,138,0.4)", accent: "#F26B8A" },
           ess: { title: "ESS Request", border: "rgba(216,166,242,0.4)", accent: "#D8A6F2" },
           transfer: { title: "Internal Transfer", border: "rgba(110,231,183,0.4)", accent: "#6EE7B7" },
@@ -4048,6 +7318,9 @@ export default function ModuleSimulation() {
           custom: { title: modal.modName, border: "rgba(129,140,248,0.4)", accent: "#818CF8" },
           award: { title: "Nominate Excellence Award", border: "rgba(255,209,102,0.4)", accent: "#FFD166" },
           payroll_cycle: { title: "Run Monthly Payroll Cycle", border: "rgba(140,233,154,0.4)", accent: "#8CE99A" },
+          retention: { title: "Retention Desk — Price the Counter-Offer", border: "rgba(140,233,154,0.45)", accent: "#8CE99A" },
+          fill_vacancy: { title: "Fill Vacancy — Succession or External Hire", border: "rgba(242,184,75,0.45)", accent: "#F2B84B" },
+          revise_budget: { title: "Revise Department Budget & Sanctioned Strength", border: "rgba(245,165,36,0.45)", accent: "#F5A524" },
         };
         const meta = MODAL_META[modal.type] || {};
         const INP = { width: "100%", padding: "8px 10px", background: "#0A0F1A", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 3, color: "#DCE6F2", fontSize: 12.5, boxSizing: "border-box", marginTop: 5, marginBottom: 14 };
@@ -4060,6 +7333,7 @@ export default function ModuleSimulation() {
           return_asset: confirmReturnAsset,
           manage_asset: () => (modal.subTab === "return" ? confirmReturnAsset() : confirmAssignAsset()),
           loan: confirmApplyLoan,
+          comp_incentives: () => (modal.subTab === "allowance" ? confirmAddAllowance() : confirmNominateAward()),
           allowance: confirmAddAllowance,
           ess: confirmESS,
           transfer: confirmTransfer,
@@ -4068,7 +7342,10 @@ export default function ModuleSimulation() {
           offboard: confirmOffboard,
           custom: confirmCustomAction,
           award: confirmNominateAward,
-          payroll_cycle: confirmRunPayrollCycle
+          payroll_cycle: confirmRunPayrollCycle,
+          retention: confirmRetention,
+          fill_vacancy: confirmFillVacancy,
+          revise_budget: confirmReviseBudget
         };
 
         /* Shared employee picker */
@@ -4084,6 +7361,13 @@ export default function ModuleSimulation() {
                   return (
                     <div key={emp.id} onClick={() => setModal(m => {
                       const next = { ...m, empId: emp.id };
+                      if (m.type === "transfer" || (m.type === "mobility" && m.subTab === "transfer")) {
+                        const currentDept = emp.dept || emp.department;
+                        if (m.newDept === currentDept) {
+                          const alternativeDept = DEPT_POOL.find(d => d !== currentDept) || DEPT_POOL[0];
+                          next.newDept = alternativeDept;
+                        }
+                      }
                       if (m.type === "return_asset" || (m.type === "manage_asset" && m.subTab === "return")) {
                         const matchingAsset = (db.assets || []).find(a => a.emp === emp.name && a.status === "Allocated");
                         if (matchingAsset) next.assetId = matchingAsset.id;
@@ -4137,7 +7421,7 @@ export default function ModuleSimulation() {
                 <X size={16} style={{ cursor: "pointer", color: "#7C93AA" }} onClick={() => setModal(null)} />
               </div>
 
-              {modal.type !== "custom" && modal.type !== "payroll_cycle" && (
+              {!["custom", "payroll_cycle", "revise_budget", "fill_vacancy", "retention"].includes(modal.type) && (
                 <>
                   <EmpPicker />
                   <div style={{ borderTop: "1px solid rgba(255,255,255,0.06)", marginBottom: 14 }} />
@@ -4172,13 +7456,66 @@ export default function ModuleSimulation() {
               {/* ── Offboard fields ── */}
               {modal.type === "offboard" && (() => {
                 const offEmp = (db.emp_docs || []).find(e => e.id === modal.empId);
+                const offEmpName = offEmp?.name?.trim().toLowerCase() || "";
+                const empAssetsToClear = (db.assets || []).filter(a =>
+                  a.emp?.trim().toLowerCase() === offEmpName &&
+                  (!a.status?.includes("Returned") && !a.status?.includes("Recovered"))
+                );
+                const empLoansToClear = (db.loans || []).filter(l =>
+                  l.emp?.trim().toLowerCase() === offEmpName &&
+                  (l.status?.includes("Active") || l.status === "Under Review")
+                );
                 const isNoticeEmp = offEmp?.status?.includes("Notice Period");
                 const todayStr = getLocalDateStr();
                 const isFutureDate = (modal.exitDate || todayStr) > todayStr;
                 const currentMode = modal.separationMode || (isNoticeEmp ? "final_clearance" : (isFutureDate ? "notice" : "final_clearance"));
 
+                /* Before anyone is released, the twin prices the alternative:
+                   what this exit costs versus what it would cost to keep them. */
+                const offTwin = twinByEmpId[modal.empId];
+                const offOffers = offTwin
+                  ? RETENTION_LEVERS.map(l => retentionOfferModel(offTwin.emp, l, offTwin.risk.score, offTwin.loss.total))
+                  : [];
+                const bestOffer = offOffers.filter(o => o.netBenefit > 0).sort((a, b) => b.netBenefit - a.netBenefit)[0];
+
                 return (
                   <>
+                    {offTwin && (
+                      <div style={{
+                        background: bestOffer ? "rgba(140,233,154,0.08)" : "rgba(242,148,107,0.08)",
+                        border: `1px solid ${bestOffer ? "rgba(140,233,154,0.4)" : "rgba(242,148,107,0.4)"}`,
+                        borderRadius: 4, padding: "10px 12px", marginBottom: 14
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                          <div style={{ fontSize: 11.5, fontWeight: 700, color: bestOffer ? "#8CE99A" : "#F2946B" }}>
+                            {bestOffer ? "💡 Finance says: retention is cheaper than replacement" : "📉 Finance says: no retention lever pays for itself here"}
+                          </div>
+                          {bestOffer && (
+                            <button className="btn" disabled={!financeView}
+                              onClick={() => actionRetention(offTwin.emp.id)}
+                              style={{ padding: "3px 9px", fontSize: 9.5, borderColor: "rgba(140,233,154,0.5)", color: "#8CE99A" }}>
+                              Open Retention Desk
+                            </button>
+                          )}
+                        </div>
+                        <div style={{ marginTop: 6, fontSize: 10.5, color: "#9FB4C8", lineHeight: 1.7 }}>
+                          Losing {offTwin.emp.name} costs a modelled <strong style={{ color: "#F26B6B" }}>{fmtINR(offTwin.loss.total)}</strong>
+                          {" "}— backfill {fmtINR(offTwin.loss.heads[0].amount)}, {offTwin.loss.daysVacant} days of vacancy at{" "}
+                          {fmtINR(offTwin.loss.dailyValue)}/day, plus knowledge loss from {offTwin.roi.tenureMonths} months of context.
+                          {bestOffer
+                            ? <> A <strong style={{ color: "#F4F7FB" }}>{bestOffer.lever.label}</strong> at{" "}
+                              <strong style={{ color: "#F2946B" }}>{fmtINR(bestOffer.yearOneCost)}</strong> would cut flight risk{" "}
+                              {offTwin.risk.score}→{bestOffer.residualRisk} for a net benefit of{" "}
+                              <strong style={{ color: "#8CE99A" }}>{fmtINR(bestOffer.netBenefit)}</strong>.</>
+                            : <> Every available lever costs more than the expected loss it prevents, so releasing and backfilling is the rational call.</>}
+                          {offTwin.successors.length > 0
+                            ? <> <strong style={{ color: "#7DD3FC" }}>{offTwin.successors[0].emp.name}</strong> can cover the seat as {offTwin.successors[0].mode.toLowerCase()}.</>
+                            : <> <strong style={{ color: "#F26B6B" }}>No internal successor</strong> — the seat will need a full external search.</>}
+                          {offTwin.isManager && <> This is a <strong style={{ color: "#F5A524" }}>leadership seat</strong>; succession will trigger automatically on exit.</>}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="mono" style={LBL}>SEPARATION PROTOCOL</div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7, marginBottom: 12 }}>
                       <div
@@ -4367,6 +7704,112 @@ export default function ModuleSimulation() {
                         </div>
                       </div>
                     )}
+
+                    {currentMode === "final_clearance" && (
+                      <div style={{
+                        marginTop: 14, marginBottom: 14, padding: "12px 14px",
+                        background: "#080E18", border: "1px solid rgba(140,233,154,0.3)", borderRadius: 6
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                          <div className="mono" style={{ fontSize: 10.5, fontWeight: 700, color: "#8CE99A", display: "flex", alignItems: "center", gap: 6 }}>
+                            <CheckCircle2 size={13} color="#8CE99A" />
+                            OFFBOARDING CLEARANCE CHECKLIST
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setOffboardChecklist({
+                              itHardware: true, accessCard: true, emailRevoked: true, biometricRevoked: true,
+                              loansCleared: true, claimsAudited: true, managerHandover: true, ndaSigned: true
+                            })}
+                            className="mono"
+                            style={{
+                              fontSize: 9.5, padding: "3px 8px", background: "rgba(140,233,154,0.15)",
+                              border: "1px solid rgba(140,233,154,0.4)", color: "#8CE99A", borderRadius: 3, cursor: "pointer", fontWeight: 700
+                            }}>
+                            ✓ Verify &amp; Sign-Off All Items
+                          </button>
+                        </div>
+
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7, fontSize: 11 }}>
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "rgba(255,255,255,0.02)", borderRadius: 3, border: "1px solid rgba(255,255,255,0.05)", cursor: "pointer" }}>
+                            <input type="checkbox" checked={!!offboardChecklist.itHardware} onChange={e => setOffboardChecklist(c => ({ ...c, itHardware: e.target.checked }))} style={{ accentColor: "#8CE99A" }} />
+                            <div>
+                              <span style={{ color: offboardChecklist.itHardware ? "#F4F7FB" : "#F2B84B" }}>💻 Laptop &amp; Hardware</span>
+                              <div style={{ fontSize: 9, color: "#8CE99A" }}>
+                                {empAssetsToClear.length === 0 ? "✓ Auto-Checked (0 pending)" : `✓ Auto-Recovery (${empAssetsToClear.length} asset will auto-return)`}
+                              </div>
+                            </div>
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "rgba(255,255,255,0.02)", borderRadius: 3, border: "1px solid rgba(255,255,255,0.05)", cursor: "pointer" }}>
+                            <input type="checkbox" checked={!!offboardChecklist.accessCard} onChange={e => setOffboardChecklist(c => ({ ...c, accessCard: e.target.checked }))} style={{ accentColor: "#8CE99A" }} />
+                            <div>
+                              <span style={{ color: offboardChecklist.accessCard ? "#F4F7FB" : "#7C93AA" }}>🔑 RFID Security Badge</span>
+                              <div style={{ fontSize: 9, color: "#8CE99A" }}>✓ Auto-Checked (Revoked)</div>
+                            </div>
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "rgba(255,255,255,0.02)", borderRadius: 3, border: "1px solid rgba(255,255,255,0.05)", cursor: "pointer" }}>
+                            <input type="checkbox" checked={!!offboardChecklist.emailRevoked} onChange={e => setOffboardChecklist(c => ({ ...c, emailRevoked: e.target.checked }))} style={{ accentColor: "#8CE99A" }} />
+                            <div>
+                              <span style={{ color: offboardChecklist.emailRevoked ? "#F4F7FB" : "#7C93AA" }}>🔐 Email &amp; Cloud Accounts</span>
+                              <div style={{ fontSize: 9, color: "#8CE99A" }}>✓ Auto-Checked (Deactivated)</div>
+                            </div>
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "rgba(255,255,255,0.02)", borderRadius: 3, border: "1px solid rgba(255,255,255,0.05)", cursor: "pointer" }}>
+                            <input type="checkbox" checked={!!offboardChecklist.biometricRevoked} onChange={e => setOffboardChecklist(c => ({ ...c, biometricRevoked: e.target.checked }))} style={{ accentColor: "#8CE99A" }} />
+                            <div>
+                              <span style={{ color: offboardChecklist.biometricRevoked ? "#F4F7FB" : "#7C93AA" }}>👆 Biometric Punch Profile</span>
+                              <div style={{ fontSize: 9, color: "#8CE99A" }}>✓ Auto-Checked (Profile Locked)</div>
+                            </div>
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "rgba(255,255,255,0.02)", borderRadius: 3, border: "1px solid rgba(255,255,255,0.05)", cursor: "pointer" }}>
+                            <input type="checkbox" checked={!!offboardChecklist.loansCleared} onChange={e => setOffboardChecklist(c => ({ ...c, loansCleared: e.target.checked }))} style={{ accentColor: "#8CE99A" }} />
+                            <div>
+                              <span style={{ color: offboardChecklist.loansCleared ? "#F4F7FB" : "#F2B84B" }}>💳 Outstanding Loans</span>
+                              <div style={{ fontSize: 9, color: "#8CE99A" }}>
+                                {empLoansToClear.length === 0 ? "✓ Auto-Checked (Nil debt)" : `✓ Auto-Settle (${empLoansToClear.length} loan audited in F&F)`}
+                              </div>
+                            </div>
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "rgba(255,255,255,0.02)", borderRadius: 3, border: "1px solid rgba(255,255,255,0.05)", cursor: "pointer" }}>
+                            <input type="checkbox" checked={!!offboardChecklist.claimsAudited} onChange={e => setOffboardChecklist(c => ({ ...c, claimsAudited: e.target.checked }))} style={{ accentColor: "#8CE99A" }} />
+                            <div>
+                              <span style={{ color: offboardChecklist.claimsAudited ? "#F4F7FB" : "#7C93AA" }}>🧾 Travel &amp; Expense Claims</span>
+                              <div style={{ fontSize: 9, color: "#8CE99A" }}>✓ Auto-Checked (Claims Voided)</div>
+                            </div>
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "rgba(255,255,255,0.02)", borderRadius: 3, border: "1px solid rgba(255,255,255,0.05)", cursor: "pointer" }}>
+                            <input type="checkbox" checked={!!offboardChecklist.managerHandover} onChange={e => setOffboardChecklist(c => ({ ...c, managerHandover: e.target.checked }))} style={{ accentColor: "#8CE99A" }} />
+                            <div>
+                              <span style={{ color: offboardChecklist.managerHandover ? "#F4F7FB" : "#7C93AA" }}>🤝 Manager Handover</span>
+                              <div style={{ fontSize: 9, color: "#8CE99A" }}>✓ Auto-Checked (Handover Signed)</div>
+                            </div>
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", background: "rgba(255,255,255,0.02)", borderRadius: 3, border: "1px solid rgba(255,255,255,0.05)", cursor: "pointer" }}>
+                            <input type="checkbox" checked={!!offboardChecklist.ndaSigned} onChange={e => setOffboardChecklist(c => ({ ...c, ndaSigned: e.target.checked }))} style={{ accentColor: "#8CE99A" }} />
+                            <div>
+                              <span style={{ color: offboardChecklist.ndaSigned ? "#F4F7FB" : "#7C93AA" }}>📄 Exit NDA &amp; Interview</span>
+                              <div style={{ fontSize: 9, color: "#8CE99A" }}>✓ Auto-Checked (Completed)</div>
+                            </div>
+                          </label>
+                        </div>
+
+                        <div style={{
+                          marginTop: 10, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.06)",
+                          display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 10
+                        }}>
+                          <span style={{ color: "#7C93AA" }}>
+                            Verification: <strong style={{ color: Object.values(offboardChecklist).filter(Boolean).length >= 8 ? "#8CE99A" : "#F2B84B" }}>
+                              {Object.values(offboardChecklist).filter(Boolean).length}/8 Items Verified
+                            </strong>
+                          </span>
+                          {Object.values(offboardChecklist).filter(Boolean).length >= 8 ? (
+                            <span style={{ color: "#8CE99A", fontWeight: 700 }}>✓ All Clearances Approved for Offboarding</span>
+                          ) : (
+                            <span style={{ color: "#F2B84B" }}>⚠️ All 8 items must be signed off to execute offboarding</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </>
                 );
               })()}
@@ -4476,65 +7919,163 @@ export default function ModuleSimulation() {
                 );
               })()}
 
-              {/* ── Award fields ── */}
-              {modal.type === "award" && (() => {
+              {/* ── Compensation & Incentives (Unified Awards & Special Allowances) ── */}
+              {(modal.type === "comp_incentives" || modal.type === "award") && (() => {
+                const isAwardTab = modal.subTab !== "allowance";
                 const selectedEmp = (db.emp_docs || []).find(e => e.id === modal.empId);
                 const perfRecords = (db.performance || []).filter(r => r.emp === selectedEmp?.name);
                 const latest = perfRecords.length ? perfRecords[perfRecords.length - 1] : null;
                 const awardCats = ["Star Performer", "Innovation Champion", "Team Player", "Rising Star", "Spot Excellence Award"];
                 return (
                   <>
-                    {/* Appraisal status banner */}
-                    <div style={{
-                      display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", marginBottom: 14,
-                      background: latest ? "rgba(255,209,102,0.08)" : "rgba(255,255,255,0.04)",
-                      border: latest ? "1px solid rgba(255,209,102,0.3)" : "1px solid rgba(255,255,255,0.1)",
-                      borderRadius: 3
-                    }}>
-                      <Award size={16} style={{ color: meta.accent, flexShrink: 0 }} />
-                      <div style={{ fontSize: 11 }}>
-                        {latest ? (
-                          <>
-                            <span style={{ color: "#F4F7FB", fontWeight: 600 }}>Appraisal on File: </span>
-                            <span style={{ color: meta.accent }}>{latest.cycle} — {latest.rating} ({latest.kpiScore || "—"} KPI)</span>
-                          </>
-                        ) : (
-                          <span style={{ color: "#7C93AA" }}>Direct Spot Award (No prior appraisal required)</span>
-                        )}
-                      </div>
+                    {/* Segmented Sub-Tab Switcher: Awards vs Allowances */}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+                      <button
+                        type="button"
+                        onClick={() => setModal(m => ({ ...m, subTab: "award" }))}
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 5,
+                          border: isAwardTab ? "1px solid #FFD166" : "1px solid rgba(255,255,255,0.1)",
+                          background: isAwardTab ? "rgba(255,209,102,0.15)" : "rgba(255,255,255,0.02)",
+                          color: isAwardTab ? "#FFD166" : "#7C93AA",
+                          fontSize: 11,
+                          fontWeight: isAwardTab ? 700 : 400,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 6,
+                          transition: "all 0.15s ease"
+                        }}>
+                        <Award size={14} style={{ color: isAwardTab ? "#FFD166" : "#7C93AA" }} />
+                        <span>🏆 Excellence Award</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setModal(m => ({ ...m, subTab: "allowance" }))}
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 5,
+                          border: !isAwardTab ? "1px solid #F59E0B" : "1px solid rgba(255,255,255,0.1)",
+                          background: !isAwardTab ? "rgba(245,158,11,0.15)" : "rgba(255,255,255,0.02)",
+                          color: !isAwardTab ? "#F59E0B" : "#7C93AA",
+                          fontSize: 11,
+                          fontWeight: !isAwardTab ? 700 : 400,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 6,
+                          transition: "all 0.15s ease"
+                        }}>
+                        <Gift size={14} style={{ color: !isAwardTab ? "#F59E0B" : "#7C93AA" }} />
+                        <span>💰 Special Allowance</span>
+                      </button>
                     </div>
 
-                    <div className="mono" style={LBL}>AWARD CATEGORY</div>
-                    <select
-                      value={modal.category}
-                      onChange={e => {
-                        const cat = e.target.value;
-                        setModal(m => ({ ...m, category: cat, cashReward: AWARD_REWARDS[cat] || 2000 }));
-                      }}
-                      className="mono"
-                      style={SEL}
-                    >
-                      {awardCats.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
+                    {isAwardTab ? (
+                      <>
+                        {/* Appraisal status banner */}
+                        <div style={{
+                          display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", marginBottom: 14,
+                          background: latest ? "rgba(255,209,102,0.08)" : "rgba(255,255,255,0.04)",
+                          border: latest ? "1px solid rgba(255,209,102,0.3)" : "1px solid rgba(255,255,255,0.1)",
+                          borderRadius: 3
+                        }}>
+                          <Award size={16} style={{ color: "#FFD166", flexShrink: 0 }} />
+                          <div style={{ fontSize: 11 }}>
+                            {latest ? (
+                              <>
+                                <span style={{ color: "#F4F7FB", fontWeight: 600 }}>Appraisal on File: </span>
+                                <span style={{ color: "#FFD166" }}>{latest.cycle} — {latest.rating} ({latest.kpiScore || "—"} KPI)</span>
+                              </>
+                            ) : (
+                              <span style={{ color: "#7C93AA" }}>Direct Spot Award (No prior appraisal required)</span>
+                            )}
+                          </div>
+                        </div>
 
-                    <div className="mono" style={LBL}>CASH REWARD (RS.) — DISBURSED IN PAYROLL</div>
-                    <div style={{ display: "flex", gap: 8, marginTop: 6, marginBottom: 14 }}>
-                      {[1500, 2000, 3500, 5000].map(amt => (
-                        <div
-                          key={amt}
-                          onClick={() => setModal(m => ({ ...m, cashReward: amt }))}
-                          style={{
-                            flex: 1, padding: "7px 0", textAlign: "center", borderRadius: 3, cursor: "pointer", fontSize: 11,
-                            border: modal.cashReward === amt ? `1px solid ${meta.accent}` : "1px solid rgba(255,255,255,0.08)",
-                            background: modal.cashReward === amt ? `${meta.accent}22` : "transparent",
-                            color: modal.cashReward === amt ? meta.accent : "#7C93AA"
+                        <div className="mono" style={LBL}>AWARD CATEGORY</div>
+                        <select
+                          value={modal.category}
+                          onChange={e => {
+                            const cat = e.target.value;
+                            setModal(m => ({ ...m, category: cat, cashReward: AWARD_REWARDS[cat] || 2000 }));
                           }}
                           className="mono"
+                          style={SEL}
                         >
-                          ₹{amt.toLocaleString("en-IN")}
+                          {awardCats.map(c => <option key={c} value={c}>{c}</option>)}
+                        </select>
+
+                        <div className="mono" style={LBL}>CASH REWARD (RS.) — DISBURSED IN PAYROLL</div>
+                        <div style={{ display: "flex", gap: 8, marginTop: 6, marginBottom: 14 }}>
+                          {[1500, 2000, 3500, 5000].map(amt => (
+                            <div
+                              key={amt}
+                              onClick={() => setModal(m => ({ ...m, cashReward: amt }))}
+                              style={{
+                                flex: 1, padding: "7px 0", textAlign: "center", borderRadius: 3, cursor: "pointer", fontSize: 11,
+                                border: modal.cashReward === amt ? "1px solid #FFD166" : "1px solid rgba(255,255,255,0.08)",
+                                background: modal.cashReward === amt ? "rgba(255,209,102,0.15)" : "transparent",
+                                color: modal.cashReward === amt ? "#FFD166" : "#7C93AA"
+                              }}
+                              className="mono"
+                            >
+                              ₹{amt.toLocaleString("en-IN")}
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="mono" style={LBL}>ALLOWANCE TYPE</div>
+                        <select value={modal.allowanceType || "LTA (Leave Travel Allowance)"} onChange={e => setModal(m => ({ ...m, allowanceType: e.target.value }))} className="mono" style={SEL}>
+                          {["LTA (Leave Travel Allowance)", "SCA (School/Children Allowance)", "Performance Bonus / Incentive", "Project Milestone Bonus", "Retention Allowance", "Meal Allowance", "Transport Allowance", "Medical Reimbursement", "Relocation Allowance", "Internet / Remote Work Allowance"].map(t => <option key={t}>{t}</option>)}
+                        </select>
+
+                        {/* Infinite Fiscal Year Stepper */}
+                        <div className="mono" style={LBL}>FISCAL YEAR / PERIOD</div>
+                        <div style={{
+                          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+                          marginBottom: 14, background: "rgba(0,0,0,0.3)", padding: "7px 10px",
+                          borderRadius: 4, border: "1px solid rgba(255,255,255,0.08)"
+                        }}>
+                          <button type="button" onClick={() => setModal(m => ({ ...m, fiscalYear: (m.fiscalYear || 2026) - 1 }))}
+                            className="mono"
+                            style={{
+                              padding: "4px 10px", fontSize: 11, background: "rgba(255,255,255,0.05)",
+                              border: "1px solid rgba(255,255,255,0.15)", borderRadius: 3, color: "#DCE6F2", cursor: "pointer"
+                            }}>
+                            ◀ Prev FY
+                          </button>
+                          <div style={{ textAlign: "center" }}>
+                            <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: "#F59E0B", letterSpacing: "0.04em" }}>
+                              FY{(modal.fiscalYear || 2026)}–{String((modal.fiscalYear || 2026) + 1).slice(2)}
+                            </span>
+                            <span style={{ fontSize: 9.5, color: "#5C7891", marginLeft: 6 }}>
+                              (Apr {(modal.fiscalYear || 2026)} – Mar {(modal.fiscalYear || 2026) + 1})
+                            </span>
+                          </div>
+                          <button type="button" onClick={() => setModal(m => ({ ...m, fiscalYear: (m.fiscalYear || 2026) + 1 }))}
+                            className="mono"
+                            style={{
+                              padding: "4px 10px", fontSize: 11, background: "rgba(255,255,255,0.05)",
+                              border: "1px solid rgba(255,255,255,0.15)", borderRadius: 3, color: "#DCE6F2", cursor: "pointer"
+                            }}>
+                            Next FY ▶
+                          </button>
+                        </div>
+
+                        <div className="mono" style={LBL}>DISBURSEMENT AMOUNT (Rs.)</div>
+                        <input type="number" min={500} max={100000} step={500} value={modal.amount || 5000}
+                          onChange={e => setModal(m => ({ ...m, amount: Number(e.target.value) }))} className="mono" style={INP} />
+                        <div className="mono" style={{ fontSize: 10, color: "#5C7891", marginBottom: 14, background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 3, padding: "7px 10px" }}>
+                          💡 One-time / annual allowance for FY{(modal.fiscalYear || 2026)}–{String((modal.fiscalYear || 2026) + 1).slice(2)}. Total entered amount (₹{Number(modal.amount || 0).toLocaleString("en-IN")}) will be credited directly to employee's gross pay in the next payroll run.
+                        </div>
+                      </>
+                    )}
                   </>
                 );
               })()}
@@ -4684,53 +8225,7 @@ export default function ModuleSimulation() {
                 </>;
               })()}
 
-              {/* ── Allowance fields ── */}
-              {modal.type === "allowance" && <>
-                <div className="mono" style={LBL}>ALLOWANCE TYPE</div>
-                <select value={modal.allowanceType} onChange={e => setModal(m => ({ ...m, allowanceType: e.target.value }))} className="mono" style={SEL}>
-                  {["LTA (Leave Travel Allowance)", "SCA (School/Children Allowance)", "Meal Allowance", "Transport Allowance", "Medical Reimbursement", "Uniform Allowance", "Internet Allowance"].map(t => <option key={t}>{t}</option>)}
-                </select>
 
-                {/* Option 1: Infinite Fiscal Year Stepper */}
-                <div className="mono" style={LBL}>FISCAL YEAR / PERIOD</div>
-                <div style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-                  marginBottom: 14, background: "rgba(0,0,0,0.3)", padding: "7px 10px",
-                  borderRadius: 4, border: "1px solid rgba(255,255,255,0.08)"
-                }}>
-                  <button type="button" onClick={() => setModal(m => ({ ...m, fiscalYear: (m.fiscalYear || 2026) - 1 }))}
-                    className="mono"
-                    style={{
-                      padding: "4px 10px", fontSize: 11, background: "rgba(255,255,255,0.05)",
-                      border: "1px solid rgba(255,255,255,0.15)", borderRadius: 3, color: "#DCE6F2", cursor: "pointer"
-                    }}>
-                    ◀ Prev FY
-                  </button>
-                  <div style={{ textAlign: "center" }}>
-                    <span className="mono" style={{ fontSize: 13, fontWeight: 700, color: meta.accent, letterSpacing: "0.04em" }}>
-                      FY{(modal.fiscalYear || 2026)}–{String((modal.fiscalYear || 2026) + 1).slice(2)}
-                    </span>
-                    <span style={{ fontSize: 9.5, color: "#5C7891", marginLeft: 6 }}>
-                      (Apr {(modal.fiscalYear || 2026)} – Mar {(modal.fiscalYear || 2026) + 1})
-                    </span>
-                  </div>
-                  <button type="button" onClick={() => setModal(m => ({ ...m, fiscalYear: (m.fiscalYear || 2026) + 1 }))}
-                    className="mono"
-                    style={{
-                      padding: "4px 10px", fontSize: 11, background: "rgba(255,255,255,0.05)",
-                      border: "1px solid rgba(255,255,255,0.15)", borderRadius: 3, color: "#DCE6F2", cursor: "pointer"
-                    }}>
-                    Next FY ▶
-                  </button>
-                </div>
-
-                <div className="mono" style={LBL}>DISBURSEMENT AMOUNT (Rs.)</div>
-                <input type="number" min={500} max={100000} step={500} value={modal.amount}
-                  onChange={e => setModal(m => ({ ...m, amount: Number(e.target.value) }))} className="mono" style={INP} />
-                <div className="mono" style={{ fontSize: 10, color: "#5C7891", marginBottom: 14, background: "rgba(242,107,138,0.06)", border: "1px solid rgba(242,107,138,0.15)", borderRadius: 3, padding: "7px 10px" }}>
-                  💡 One-time / annual lump-sum allowance for FY{(modal.fiscalYear || 2026)}–{String((modal.fiscalYear || 2026) + 1).slice(2)}. Total entered amount (₹{Number(modal.amount || 0).toLocaleString("en-IN")}) will be credited directly to employee's gross pay in the next payroll run.
-                </div>
-              </>}
 
               {/* ── Internal Talent Mobility & Career (Promotion & Transfer) ── */}
               {(modal.type === "mobility" || modal.type === "promote" || modal.type === "transfer") && (() => {
@@ -5487,9 +8982,357 @@ export default function ModuleSimulation() {
                 );
               })()}
 
+              {/* ── Retention Desk: price the counter-offer against the exit ── */}
+              {modal.type === "retention" && (() => {
+                const t = twinByEmpId[modal.empId];
+                if (!t) return <div style={{ color: "#F26B6B", fontSize: 12 }}>This employee is no longer active.</div>;
+                const offers = RETENTION_LEVERS.map(l => retentionOfferModel(t.emp, l, t.risk.score, t.loss.total));
+                const sel = offers.find(o => o.lever.key === modal.leverKey) || offers[1];
+                const b = budgetByDept[t.dept];
+                const affordable = !b || sel.yearOneCost <= b.available;
+                const blockedByAppraisal = sel.lever.requiresAppraisal && !t.rating;
+
+                return (
+                  <>
+                    {/* Employee Selector for Retention Desk */}
+                    <div style={{ marginBottom: 12 }}>
+                      <label className="mono" style={LBL}>Select Employee for Retention Review</label>
+                      <select
+                        value={modal.empId}
+                        onChange={(e) => {
+                          const newEmpId = e.target.value;
+                          const newTwin = twinByEmpId[newEmpId];
+                          if (newTwin) {
+                            const newOffers = RETENTION_LEVERS.map(l => retentionOfferModel(newTwin.emp, l, newTwin.risk.score, newTwin.loss.total));
+                            const best = newOffers.filter(o => o.netBenefit > 0).sort((a, b) => b.netBenefit - a.netBenefit)[0];
+                            setModal(prev => ({
+                              ...prev,
+                              empId: newEmpId,
+                              leverKey: best ? best.lever.key : "retention_hike"
+                            }));
+                          }
+                        }}
+                        className="mono"
+                        style={{ ...INP, marginTop: 4, marginBottom: 0 }}>
+                        {workforceTwin.filter(wt => !wt.emp.status?.includes("Inactive")).map(wt => (
+                          <option key={wt.emp.id} value={wt.emp.id}>
+                            {wt.emp.name} ({wt.desig} · {wt.dept}) — Flight Risk: {wt.risk.score}/100 ({wt.risk.band})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div style={{ background: "rgba(0,0,0,0.25)", borderRadius: 4, padding: "10px 12px", marginBottom: 14 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                        <div>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: "#F4F7FB" }}>{t.emp.name}</div>
+                          <div className="mono" style={{ fontSize: 10, color: "#7C93AA" }}>
+                            {t.desig} · {t.dept} · {t.roi.tenureMonths}mo tenure · appraisal {t.rating || "none on file"}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div className="mono" style={{ fontSize: 20, fontWeight: 700, color: t.risk.color }}>{t.risk.score}/100</div>
+                          <div className="mono" style={{ fontSize: 9, color: "#7C93AA" }}>{t.risk.band} flight risk</div>
+                        </div>
+                      </div>
+                      <div style={{ marginTop: 8, fontSize: 10.5, color: "#9FB4C8", lineHeight: 1.6 }}>
+                        <strong style={{ color: "#F5A524" }}>Why: </strong>
+                        {t.risk.drivers.filter(d => d.points > 0).slice(0, 3).map(d => d.label).join(" · ") || "no material risk drivers"}
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 10.5, color: "#9FB4C8" }}>
+                        <strong style={{ color: "#F26B6B" }}>If they walk: </strong>
+                        {fmtINR(t.loss.total)} total ({fmtINR(t.expectedLoss)} probability-weighted) ·{" "}
+                        {t.successors.length ? `${t.successors[0].emp.name} could cover as ${t.successors[0].mode}` : "no internal successor — full external search"}
+                      </div>
+                    </div>
+
+                    <div className="mono" style={LBL}>CHOOSE A LEVER</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6, marginBottom: 14 }}>
+                      {offers.map(o => {
+                        const active = o.lever.key === modal.leverKey;
+                        const ok = o.netBenefit > 0;
+                        return (
+                          <div key={o.lever.key} onClick={() => setModal(m => ({ ...m, leverKey: o.lever.key }))}
+                            style={{
+                              padding: "8px 10px", borderRadius: 4, cursor: "pointer",
+                              border: active ? `1px solid ${ok ? "#8CE99A" : "#F2946B"}` : "1px solid rgba(255,255,255,0.08)",
+                              background: active ? (ok ? "rgba(140,233,154,0.12)" : "rgba(242,148,107,0.12)") : "transparent",
+                              display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr 1fr", gap: 8, alignItems: "center"
+                            }}>
+                            <div>
+                              <div style={{ fontSize: 11.5, fontWeight: 600, color: active ? "#F4F7FB" : "#9FB4C8" }}>{o.lever.label}</div>
+                              <div className="mono" style={{ fontSize: 9, color: "#5C7891" }}>
+                                {o.lever.detail}
+                                {o.lever.key === "promotion" && ` → ${o.newDesignation}`}
+                              </div>
+                            </div>
+                            <div className="mono" style={{ fontSize: 10, textAlign: "right" }}>
+                              <div style={{ color: "#F2946B", fontWeight: 700 }}>{fmtINR(o.yearOneCost)}</div>
+                              <div style={{ color: "#5C7891", fontSize: 8.5 }}>year-1 cost</div>
+                            </div>
+                            <div className="mono" style={{ fontSize: 10, textAlign: "right" }}>
+                              <div style={{ color: "#7DD3FC", fontWeight: 700 }}>{t.risk.score}→{o.residualRisk}</div>
+                              <div style={{ color: "#5C7891", fontSize: 8.5 }}>risk after</div>
+                            </div>
+                            <div className="mono" style={{ fontSize: 10, textAlign: "right" }}>
+                              <div style={{ color: o.netBenefit >= 0 ? "#8CE99A" : "#F26B6B", fontWeight: 700 }}>{fmtINR(o.netBenefit)}</div>
+                              <div style={{ color: "#5C7891", fontSize: 8.5 }}>net benefit</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div style={{
+                      background: sel.netBenefit >= 0 ? "rgba(140,233,154,0.08)" : "rgba(242,107,107,0.08)",
+                      border: `1px solid ${sel.netBenefit >= 0 ? "rgba(140,233,154,0.35)" : "rgba(242,107,107,0.35)"}`,
+                      borderRadius: 4, padding: "10px 12px", marginBottom: 14, fontSize: 10.5, color: "#9FB4C8", lineHeight: 1.7
+                    }}>
+                      <div style={{ fontWeight: 700, color: sel.netBenefit >= 0 ? "#8CE99A" : "#F26B6B", fontSize: 12, marginBottom: 4 }}>
+                        {sel.netBenefit >= 0 ? "✓ RETAIN — cheaper to keep than to replace" : "✗ RELEASE — this package costs more than the exit it prevents"}
+                      </div>
+                      Pay moves {fmtINR(t.emp.dailyRate || 0)}/day → <strong style={{ color: "#F4F7FB" }}>{fmtINR(sel.newRate)}/day</strong>
+                      {sel.lever.key === "promotion" && <> and the grade moves <strong style={{ color: "#F4F7FB" }}>{t.desig} → {sel.newDesignation}</strong></>}.
+                      That is <strong style={{ color: "#F2946B" }}>{fmtINR(sel.yearOneCost)}</strong> in year one against a modelled exit cost of{" "}
+                      <strong style={{ color: "#F26B6B" }}>{fmtINR(t.loss.total)}</strong>, so the expected saving is{" "}
+                      <strong style={{ color: "#8CE99A" }}>{fmtINR(sel.expectedSaving)}</strong> — a net{" "}
+                      {sel.netBenefit >= 0 ? "gain" : "loss"} of <strong style={{ color: sel.netBenefit >= 0 ? "#8CE99A" : "#F26B6B" }}>{fmtINR(Math.abs(sel.netBenefit))}</strong>
+                      {sel.roi !== Infinity && sel.yearOneCost > 0 && <> ({sel.roi.toFixed(2)}x return on the retention spend)</>}.
+                      {b && <> {t.dept} has <strong style={{ color: affordable ? "#8CE99A" : "#F26B6B" }}>{fmtINR(b.available)}</strong> uncommitted.</>}
+                    </div>
+
+                    {!affordable && (
+                      <div className="mono" style={{ fontSize: 10.5, color: "#F26B6B", background: "rgba(242,107,107,0.1)", border: "1px solid rgba(242,107,107,0.35)", borderRadius: 3, padding: "8px 10px", marginBottom: 14 }}>
+                        ⚠️ Budget shortfall — this package needs {fmtINR(sel.yearOneCost)} but only {fmtINR(b.available)} is uncommitted in {t.dept}. Revise the department envelope first, or choose a cheaper lever.
+                      </div>
+                    )}
+                    {blockedByAppraisal && (
+                      <div className="mono" style={{ fontSize: 10.5, color: "#F2B84B", background: "rgba(242,184,75,0.1)", border: "1px solid rgba(242,184,75,0.35)", borderRadius: 3, padding: "8px 10px", marginBottom: 14 }}>
+                        ⚠️ Promotion needs a completed appraisal cycle on file for {t.emp.name}. Log one first, or use a retention hike instead.
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+
+              {/* ── Fill Vacancy: internal succession vs external hire ── */}
+              {modal.type === "fill_vacancy" && (() => {
+                const v = openVacancies.find(x => x.id === modal.vacancyId);
+                if (!v) return <div style={{ color: "#F26B6B", fontSize: 12 }}>This vacancy is no longer open.</div>;
+                const active = (db.emp_docs || []).filter(e => !e.status?.includes("Inactive"));
+                const cands = findReplacementCandidates({ id: "__v__", designation: v.grade, department: v.dept, dept: v.dept }, active, ratingOf);
+                const extOnboard = onboardingCostModel(v.grade);
+                const b = budgetByDept[v.dept];
+                const extRoi = employeeROIModel({ designation: v.grade, dailyRate: DESIGNATION_RATES[v.grade], joined: todayStr }, todayStr);
+
+                return (
+                  <>
+                    <div style={{ background: "rgba(0,0,0,0.25)", borderRadius: 4, padding: "10px 12px", marginBottom: 14 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: "#F4F7FB" }}>{v.grade} — {v.dept}</div>
+                      <div className="mono" style={{ fontSize: 10, color: "#7C93AA", marginTop: 2 }}>
+                        {v.id} · opened {v.openedOn} · {v.causedBy}
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 10.5, color: "#9FB4C8" }}>
+                        This seat has been empty <strong style={{ color: "#F2B84B" }}>{v.daysOpen} day(s)</strong>, forgoing{" "}
+                        <strong style={{ color: "#F26B6B" }}>{fmtINR(v.dailyLoss)}/day</strong> of output —{" "}
+                        <strong style={{ color: "#F26B6B" }}>{fmtINR(v.cumulativeLoss)}</strong> lost so far.
+                      </div>
+                    </div>
+
+                    <div className="mono" style={LBL}>FILL ROUTE</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 6, marginBottom: 14 }}>
+                      {[
+                        { k: "internal", title: "Internal Succession", sub: cands.length ? `${cands.length} candidate(s) on the bench` : "no candidates available", ok: cands.length > 0 },
+                        { k: "external", title: "External Hire", sub: `${fmtINR(extOnboard.total)} · ~${gradeEcon(v.grade).daysToFill}d lead time`, ok: true },
+                      ].map(r => (
+                        <div key={r.k} onClick={() => r.ok && setModal(m => ({ ...m, fillMode: r.k }))}
+                          style={{
+                            padding: "9px 11px", borderRadius: 4, cursor: r.ok ? "pointer" : "not-allowed", opacity: r.ok ? 1 : 0.45,
+                            border: modal.fillMode === r.k ? "1px solid #F2B84B" : "1px solid rgba(255,255,255,0.08)",
+                            background: modal.fillMode === r.k ? "rgba(242,184,75,0.14)" : "transparent"
+                          }}>
+                          <div style={{ fontSize: 11.5, fontWeight: 700, color: modal.fillMode === r.k ? "#F2B84B" : "#9FB4C8" }}>{r.title}</div>
+                          <div className="mono" style={{ fontSize: 9.5, color: "#5C7891" }}>{r.sub}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {modal.fillMode === "internal" && (
+                      <>
+                        <div className="mono" style={LBL}>SUCCESSION BENCH</div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 6, marginBottom: 14 }}>
+                          {cands.length === 0 && (
+                            <div style={{ fontSize: 11, color: "#F26B6B" }}>No internal candidate matches this grade. Switch to an external hire.</div>
+                          )}
+                          {cands.map(c => {
+                            const active2 = modal.candidateId === c.emp.id;
+                            const cRate = Number(c.emp.dailyRate) || 0;
+                            const delta = Math.round(((DESIGNATION_RATES[v.grade] || cRate) - cRate) * 30 * 12 * (1 + STATUTORY_LOAD));
+                            return (
+                              <div key={c.emp.id} onClick={() => setModal(m => ({ ...m, candidateId: c.emp.id }))}
+                                style={{
+                                  padding: "8px 10px", borderRadius: 4, cursor: "pointer",
+                                  border: active2 ? "1px solid #8CE99A" : "1px solid rgba(255,255,255,0.08)",
+                                  background: active2 ? "rgba(140,233,154,0.12)" : "transparent",
+                                  display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10
+                                }}>
+                                <div>
+                                  <div style={{ fontSize: 11.5, fontWeight: 600, color: active2 ? "#F4F7FB" : "#9FB4C8" }}>
+                                    {c.emp.name}
+                                    <span className="mono" style={{ fontSize: 9, color: "#8CE99A", marginLeft: 6 }}>{c.mode}</span>
+                                    <span className="mono" style={{ fontSize: 9, color: "#5C7891", marginLeft: 6 }}>fit {c.fitScore}%</span>
+                                  </div>
+                                  <div className="mono" style={{ fontSize: 9, color: "#5C7891" }}>{c.note}</div>
+                                </div>
+                                <div className="mono" style={{ fontSize: 10, textAlign: "right", whiteSpace: "nowrap" }}>
+                                  <div style={{ color: "#F2946B", fontWeight: 700 }}>{fmtINR(Math.max(0, delta))}</div>
+                                  <div style={{ color: "#5C7891", fontSize: 8.5 }}>added run-rate</div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div style={{ background: "rgba(140,233,154,0.08)", border: "1px solid rgba(140,233,154,0.3)", borderRadius: 4, padding: "9px 11px", marginBottom: 14, fontSize: 10.5, color: "#9FB4C8", lineHeight: 1.7 }}>
+                          Filling internally avoids <strong style={{ color: "#8CE99A" }}>{fmtINR(extOnboard.total)}</strong> of external onboarding cost and closes the gap in days rather than weeks.
+                          {cands.find(c => c.emp.id === modal.candidateId)?.cascades && (
+                            <> Note: this move <strong style={{ color: "#F2B84B" }}>cascades a new vacancy</strong> at the successor's old grade, which the twin will open automatically.</>
+                          )}
+                        </div>
+                      </>
+                    )}
+
+                    {modal.fillMode === "external" && (
+                      <div style={{ background: "rgba(242,184,75,0.08)", border: "1px solid rgba(242,184,75,0.3)", borderRadius: 4, padding: "10px 12px", marginBottom: 14, fontSize: 10.5, color: "#9FB4C8", lineHeight: 1.8 }}>
+                        <div style={{ fontWeight: 700, color: "#F2B84B", marginBottom: 5 }}>External hire — cost to acquire</div>
+                        {extOnboard.heads.map(h => (
+                          <div key={h.key} style={{ display: "flex", justifyContent: "space-between" }}>
+                            <span>{h.label}</span><span className="mono" style={{ color: "#DCE6F2" }}>{fmtINR(h.amount)}</span>
+                          </div>
+                        ))}
+                        <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid rgba(255,255,255,0.1)", marginTop: 4, paddingTop: 4, fontWeight: 700 }}>
+                          <span style={{ color: "#F4F7FB" }}>One-time total</span><span className="mono" style={{ color: "#F2B84B" }}>{fmtINR(extOnboard.total)}</span>
+                        </div>
+                        <div style={{ marginTop: 6 }}>
+                          Plus <strong style={{ color: "#F2946B" }}>{fmtINR(extRoi.cost.total)}/yr</strong> run-rate against a modelled{" "}
+                          <strong style={{ color: "#7DD3FC" }}>{fmtINR(extRoi.annualValue)}/yr</strong> of output — steady margin{" "}
+                          <strong style={{ color: extRoi.steadyMargin >= 0 ? "#8CE99A" : "#F26B6B" }}>{fmtINR(extRoi.steadyMargin)}</strong>, breaking even in ~{extRoi.breakEvenMonths ?? "—"} months.
+                          {b && <> {v.dept} has <strong style={{ color: "#8CE99A" }}>{fmtINR(b.available)}</strong> uncommitted and {b.headcount}/{b.sanctioned} seats filled — the hire form will re-run this gate before anyone is created.</>}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+
+              {/* ── Revise Budget: the accountant amends the plan ── */}
+              {modal.type === "revise_budget" && (() => {
+                const b = budgetByDept[modal.dept];
+                if (!b) return <div style={{ color: "#F26B6B", fontSize: 12 }}>No budget row for this department.</div>;
+                const newBudget = Math.max(0, Number(modal.annualBudget) || 0);
+                const newSanctioned = Math.max(0, parseInt(modal.sanctioned, 10) || 0);
+                const newAvailable = newBudget - b.totalCommitted;
+                const cutTooDeep = newBudget < b.totalCommitted;
+                const ceilingTooLow = newSanctioned < b.headcount;
+
+                return (
+                  <>
+                    {/* Department Selector */}
+                    <div style={{ marginBottom: 12 }}>
+                      <label className="mono" style={LBL}>Select Department to Revise</label>
+                      <select
+                        value={modal.dept}
+                        onChange={(e) => {
+                          const newDept = e.target.value;
+                          const targetB = budgetByDept[newDept];
+                          if (targetB) {
+                            setModal(prev => ({
+                              ...prev,
+                              dept: newDept,
+                              sanctioned: targetB.sanctioned,
+                              annualBudget: targetB.annualBudget,
+                            }));
+                          }
+                        }}
+                        className="mono"
+                        style={{ ...INP, marginTop: 4, marginBottom: 0 }}>
+                        {budgetModel.map(bRow => (
+                          <option key={bRow.dept} value={bRow.dept}>
+                            {bRow.dept} — {bRow.headcount}/{bRow.sanctioned} seats · Budget: {fmtINR(bRow.annualBudget)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div style={{ background: "rgba(0,0,0,0.25)", borderRadius: 4, padding: "10px 12px", marginBottom: 14, fontSize: 10.5, color: "#9FB4C8", lineHeight: 1.7 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: "#F4F7FB", marginBottom: 4 }}>{b.dept}</div>
+                      Currently carrying <strong style={{ color: "#F4F7FB" }}>{b.headcount} of {b.sanctioned}</strong> sanctioned seats
+                      ({b.vacant} vacant, {b.onLeave} on leave, {b.onNotice} on notice).
+                      Committed <strong style={{ color: "#F2946B" }}>{fmtINR(b.totalCommitted)}</strong> of{" "}
+                      <strong style={{ color: "#F4F7FB" }}>{fmtINR(b.annualBudget)}</strong> — {Math.round(b.utilisation * 100)}% utilised,{" "}
+                      <strong style={{ color: b.available < 0 ? "#F26B6B" : "#8CE99A" }}>{fmtINR(b.available)}</strong> uncommitted.
+                    </div>
+
+                    <div className="mono" style={LBL}>SANCTIONED HEADCOUNT CEILING</div>
+                    <input type="number" min="0" value={modal.sanctioned}
+                      onChange={e => setModal(m => ({ ...m, sanctioned: e.target.value }))}
+                      className="mono" style={INP} />
+
+                    <div className="mono" style={LBL}>ANNUAL BUDGET ENVELOPE (INR)</div>
+                    <input type="number" min="0" step="100000" value={modal.annualBudget}
+                      onChange={e => setModal(m => ({ ...m, annualBudget: e.target.value }))}
+                      className="mono" style={INP} />
+
+                    <div style={{
+                      background: cutTooDeep || ceilingTooLow ? "rgba(242,107,107,0.08)" : "rgba(245,165,36,0.08)",
+                      border: `1px solid ${cutTooDeep || ceilingTooLow ? "rgba(242,107,107,0.35)" : "rgba(245,165,36,0.3)"}`,
+                      borderRadius: 4, padding: "10px 12px", marginBottom: 14, fontSize: 10.5, color: "#9FB4C8", lineHeight: 1.7
+                    }}>
+                      {cutTooDeep && (
+                        <div style={{ color: "#F26B6B", fontWeight: 700, marginBottom: 4 }}>
+                          ⚠️ Cannot cut below {fmtINR(b.totalCommitted)} — that money is already committed to live headcount and booked costs.
+                        </div>
+                      )}
+                      {ceilingTooLow && (
+                        <div style={{ color: "#F26B6B", fontWeight: 700, marginBottom: 4 }}>
+                          ⚠️ Cannot set the ceiling to {newSanctioned} while {b.headcount} people are active. Offboard or redeploy first.
+                        </div>
+                      )}
+                      {!cutTooDeep && !ceilingTooLow && (
+                        <>
+                          After this revision {b.dept} can carry <strong style={{ color: "#F4F7FB" }}>{Math.max(0, newSanctioned - b.headcount)} more</strong> hire(s)
+                          against <strong style={{ color: "#8CE99A" }}>{fmtINR(newAvailable)}</strong> of uncommitted budget — roughly{" "}
+                          <strong style={{ color: "#F4F7FB" }}>
+                            {Math.max(0, Math.floor(newAvailable / Math.max(1, onboardingCostModel("Specialist").total + annualCostModel({ designation: "Specialist", dailyRate: DESIGNATION_RATES["Specialist"] }).total)))}
+                          </strong>{" "}
+                          Specialist-grade hires at full year-one load.
+                        </>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
+
               <button className="btn"
                 disabled={
-                  (modal.type !== "payroll_cycle" && !modal.empId) ||
+                  (!["payroll_cycle", "revise_budget", "fill_vacancy"].includes(modal.type) && !modal.empId) ||
+                  (modal.type === "fill_vacancy" && modal.fillMode === "internal" && !modal.candidateId) ||
+                  (modal.type === "retention" && (() => {
+                    const t = twinByEmpId[modal.empId];
+                    if (!t) return true;
+                    const lever = RETENTION_LEVERS.find(l => l.key === modal.leverKey);
+                    if (!lever) return true;
+                    if (lever.requiresAppraisal && !t.rating) return true;
+                    const o = retentionOfferModel(t.emp, lever, t.risk.score, t.loss.total);
+                    const b = budgetByDept[t.dept];
+                    return !!b && o.yearOneCost > b.available;
+                  })()) ||
+                  (modal.type === "revise_budget" && (() => {
+                    const b = budgetByDept[modal.dept];
+                    if (!b) return true;
+                    return (Number(modal.annualBudget) || 0) < b.totalCommitted ||
+                      (parseInt(modal.sanctioned, 10) || 0) < b.headcount;
+                  })()) ||
+                  (modal.type === "offboard" && (modal.separationMode || "final_clearance") === "final_clearance" && Object.values(offboardChecklist).filter(Boolean).length < 8) ||
                   ((modal.type === "return_asset" || (modal.type === "manage_asset" && modal.subTab === "return")) && !modal.assetId && !(db.assets || []).some(a => a.status === "Allocated")) ||
                   ((modal.type === "promote" || (modal.type === "mobility" && modal.subTab !== "transfer")) && (() => {
                     const emp = (db.emp_docs || []).find(e => e.id === modal.empId);
@@ -5503,30 +9346,41 @@ export default function ModuleSimulation() {
                   })()) ||
                   ((modal.type === "transfer" || (modal.type === "mobility" && modal.subTab === "transfer")) && (() => {
                     const emp = (db.emp_docs || []).find(e => e.id === modal.empId);
-                    return emp && modal.newDept === emp.dept;
-                  })())
+                    return emp && modal.newDept === (emp.dept || emp.department);
+                  })()) ||
+                  (modal.type === "comp_incentives" && modal.subTab === "allowance" && (!modal.amount || modal.amount < 500))
                 }
                 onClick={CONFIRM_FN[modal.type]}
                 style={{ width: "100%", textAlign: "center", borderColor: meta.accent, color: "#F4F7FB", background: `${meta.accent}18`, fontWeight: 600 }}>
-                {modal.type === "payroll_cycle"
-                  ? `PROCESS PAYROLL — ${(modal.month || "CYCLE").toUpperCase()}`
-                  : modal.type === "manage_asset"
-                    ? (modal.subTab === "return" ? "CONFIRM ASSET RETURN" : "ALLOCATE HARDWARE ASSET")
-                    : modal.type === "mobility"
-                      ? (modal.subTab === "transfer" ? "CONFIRM DEPARTMENT TRANSFER" : "CONFIRM PROMOTION & REVISE SCALE")
-                      : (modal.type === "ess" && (modal.req === "Reimbursement Claim" || modal.req === "Attendance Correction" || modal.req === "Document Request")
-                        ? "SUBMIT FOR HR APPROVAL"
-                        : modal.type === "return_asset"
-                          ? "CONFIRM ASSET RETURN"
-                          : modal.type === "promote"
-                            ? "CONFIRM PROMOTION & REVISE SCALE"
-                            : modal.type === "transfer"
-                              ? "CONFIRM DEPARTMENT TRANSFER"
-                              : modal.type === "offboard"
-                                ? (modal.separationMode === "notice"
-                                  ? "SCHEDULE RESIGNATION (START NOTICE PERIOD)"
-                                  : "EXECUTE FINAL CLEARANCE & F&F SETTLEMENT")
-                                : "CONFIRM & SUBMIT")}
+                {modal.type === "comp_incentives"
+                  ? (modal.subTab === "allowance" ? "AUTHORIZE SPECIAL ALLOWANCE & QUEUE IN PAYROLL" : "CONFIRM NOMINATION FOR EXCELLENCE AWARD")
+                  : modal.type === "retention"
+                    ? "APPROVE RETENTION PACKAGE & BOOK THE COST"
+                    : modal.type === "fill_vacancy"
+                      ? (modal.fillMode === "internal" ? "CONFIRM INTERNAL SUCCESSION" : "PROCEED TO BUDGET-GATED EXTERNAL HIRE")
+                      : modal.type === "revise_budget"
+                        ? "COMMIT REVISED BUDGET PLAN"
+                        : modal.type === "payroll_cycle"
+                          ? `PROCESS PAYROLL — ${(modal.month || "CYCLE").toUpperCase()}`
+                          : modal.type === "offboard"
+                            ? ((modal.separationMode || "final_clearance") === "final_clearance" && Object.values(offboardChecklist).filter(Boolean).length < 8
+                              ? `COMPLETE ALL 8 CLEARANCE ITEMS (${Object.values(offboardChecklist).filter(Boolean).length}/8 VERIFIED)`
+                              : (modal.separationMode === "notice"
+                                ? "SCHEDULE RESIGNATION (START NOTICE PERIOD)"
+                                : "CONFIRM OFFBOARD & RUN FLOWCHART SIMULATION"))
+                            : modal.type === "manage_asset"
+                              ? (modal.subTab === "return" ? "CONFIRM ASSET RETURN" : "ALLOCATE HARDWARE ASSET")
+                              : modal.type === "mobility"
+                                ? (modal.subTab === "transfer" ? "CONFIRM DEPARTMENT TRANSFER" : "CONFIRM PROMOTION & REVISE SCALE")
+                                : (modal.type === "ess" && (modal.req === "Reimbursement Claim" || modal.req === "Attendance Correction" || modal.req === "Document Request")
+                                  ? "SUBMIT FOR HR APPROVAL"
+                                  : modal.type === "return_asset"
+                                    ? "CONFIRM ASSET RETURN"
+                                    : modal.type === "promote"
+                                      ? "CONFIRM PROMOTION & REVISE SCALE"
+                                      : modal.type === "transfer"
+                                        ? "CONFIRM DEPARTMENT TRANSFER"
+                                        : "CONFIRM & SUBMIT")}
               </button>
             </div>
           </div>
@@ -6273,6 +10127,8 @@ export default function ModuleSimulation() {
           </div>
         </div>
       )}
+
+
     </div>
   );
 }

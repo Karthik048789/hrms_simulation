@@ -35,12 +35,21 @@ app.get('/api/modules', async (req, res) => {
   }
 });
 
-// Create a new module
+// Create or update a module
 app.post('/api/modules', async (req, res) => {
   const { id, name, layer, table_name, active, is_custom, schema } = req.body;
   try {
     const result = await pool.query(
-      'INSERT INTO hrms_modules (id, name, layer, table_name, active, is_custom, schema) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      `INSERT INTO hrms_modules (id, name, layer, table_name, active, is_custom, schema)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         layer = EXCLUDED.layer,
+         table_name = EXCLUDED.table_name,
+         active = EXCLUDED.active,
+         is_custom = EXCLUDED.is_custom,
+         schema = EXCLUDED.schema
+       RETURNING *`,
       [id, name, layer, table_name, active, is_custom, schema]
     );
     res.status(201).json(result.rows[0]);
@@ -98,11 +107,17 @@ app.post('/api/records', async (req, res) => {
   }
 });
 
-// Reset simulation (Delete all data)
+// Reset simulation
 app.delete('/api/reset', async (req, res) => {
     try {
-        // We only deactivate custom modules to keep them in schema
+        // Deactivate custom modules
         await pool.query('UPDATE hrms_modules SET active = false WHERE is_custom = true');
+        // Restore built-in modules to active
+        await pool.query('UPDATE hrms_modules SET active = true WHERE is_custom = false');
+        // If clear_records is requested, purge simulation records
+        if (req.query.clear_records === 'true') {
+            await pool.query('DELETE FROM hrms_records');
+        }
         res.json({ message: 'Simulation reset successful' });
     } catch (err) {
         console.error(err);
